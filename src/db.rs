@@ -1,8 +1,9 @@
 use std::sync::atomic;
 
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
+use log::error;
 use tokio::{
-    fs,
+    fs::read_dir,
     sync::{mpsc::Receiver, Mutex},
 };
 
@@ -19,7 +20,7 @@ pub struct DB {
     // value_dir_guard: x,
 
     // closers: closers,
-    mt: Mutex<MemTable>,
+    mt: Option<Mutex<MemTable>>,
     imm: Mutex<Vec<MemTable>>,
 
     next_mem_fid: u32,
@@ -48,10 +49,10 @@ pub async fn open(opt: Options) -> Result<DB> {
 
     let manifest_file = open_or_create_manifest_file(&opt).await?;
 
-    let mut db = DB {
-        mt: todo!(),
+    let mut _db = DB {
+        mt: None,
         imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
-        next_mem_fid: todo!(),
+        next_mem_fid: 0,
         opt,
         manifest: manifest_file,
         flush_ch: todo!(),
@@ -60,13 +61,21 @@ pub async fn open(opt: Options) -> Result<DB> {
         is_closed: todo!(),
     };
 
-    db.open_mem_tables().await?;
+    _db.open_mem_tables()
+        .await
+        .map_err(|e| anyhow!("Opening memtables error: {}", e))?;
+
+    _db.mt = Some(Mutex::new(
+        _db.new_mem_table()
+            .await
+            .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
+    ));
 
     unimplemented!()
 }
 
 impl DB {
-    pub fn new_transaction(&self, update: bool) -> Result<Txn> {
+    pub fn new_transaction(&self, _update: bool) -> Result<Txn> {
         unimplemented!()
     }
 
@@ -74,11 +83,11 @@ impl DB {
         unimplemented!()
     }
 
-    pub fn update(&self, f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
+    pub fn update(&self, _f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
         unimplemented!()
     }
 
-    pub fn view(&self, f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
+    pub fn view(&self, _f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
         unimplemented!()
     }
 }
@@ -86,10 +95,9 @@ impl DB {
 impl DB {
     async fn open_mem_tables(&mut self) -> Result<()> {
         let dir = self.opt.dir.clone();
-        let mut entries = fs::read_dir(dir.as_str()).await?;
+        let mut entries = read_dir(dir.as_str()).await?;
         let mut fids = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
-            println!("{:?}: {}", entry.file_name(), entry.ino());
             let filename = entry
                 .file_name()
                 .into_string()
@@ -107,7 +115,12 @@ impl DB {
 
         fids.sort();
         for fid in &fids {
-            let mt = open_mem_table(&self.opt, fid.to_owned(), 0).await?;
+            let (mt, _) = open_mem_table(
+                self.opt.clone(),
+                fid.to_owned(),
+                std::fs::File::options().write(true),
+            )
+            .await?;
 
             if mt.sl.is_empty() {
                 mt.decr_ref();
@@ -125,8 +138,30 @@ impl DB {
         Ok(())
     }
 
-    fn new_mem_table(&mut self) -> Result<MemTable> {
-        todo!()
+    async fn new_mem_table(&mut self) -> Result<MemTable> {
+        match open_mem_table(
+            self.opt.clone(),
+            self.next_mem_fid,
+            std::fs::File::options().write(true).create(true),
+        )
+        .await
+        {
+            Ok((mt, true)) => {
+                self.next_mem_fid += 1;
+                return Ok(mt);
+            }
+            Ok((_, _)) => {
+                bail!(
+                    "File {:05}{} already exists",
+                    self.next_mem_fid,
+                    MEM_FILE_EXT
+                )
+            }
+            Err(e) => {
+                error!("Got error for id({}): {}", self.next_mem_fid, e);
+                bail!("new_mem_table error: {}", e)
+            }
+        }
     }
 }
 

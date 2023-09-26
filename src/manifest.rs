@@ -8,7 +8,7 @@ use bytes::BytesMut;
 use crc::{Crc, CRC_32_ISCSI};
 use prost::Message;
 use tokio::{
-    fs,
+    fs::{rename, File},
     io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::Mutex,
 };
@@ -94,7 +94,7 @@ pub struct TableManifest {
 
 #[derive(Debug)]
 pub struct ManifestFile {
-    fp: fs::File,
+    fp: File,
     directory: String,
 
     external_magic: u16,
@@ -113,7 +113,7 @@ async fn help_open_or_create_manifest_file(
 ) -> Result<ManifestFile> {
     let path = Path::new(&dir).join(MANIFEST_FILENAME);
 
-    let mut fp = match fs::File::options()
+    let mut fp = match File::options()
         .read(true)
         .write(true)
         .open(path.as_path())
@@ -150,10 +150,10 @@ async fn help_open_or_create_manifest_file(
     })
 }
 
-async fn help_rewrite(dir: &String, m: &Manifest, ext_magic: u16) -> Result<fs::File> {
+async fn help_rewrite(dir: &String, m: &Manifest, ext_magic: u16) -> Result<File> {
     let rewrite_path = Path::new(&dir).join(MANIFEST_REWRITE_FILENAME);
 
-    let mut fp = fs::File::options()
+    let mut fp = File::options()
         .write(true)
         .create(true)
         .truncate(true)
@@ -183,14 +183,14 @@ async fn help_rewrite(dir: &String, m: &Manifest, ext_magic: u16) -> Result<fs::
         .map_err(|e| anyhow!("Sync {} error: {}", MANIFEST_REWRITE_FILENAME, e))?;
 
     let manifest_path = Path::new(&dir).join(MANIFEST_FILENAME);
-    fs::rename(rewrite_path, &manifest_path).await?;
+    rename(rewrite_path, &manifest_path).await?;
 
-    let mut fp = fs::File::options().write(true).open(manifest_path).await?;
+    let mut fp = File::options().write(true).open(manifest_path).await?;
     fp.seek(std::io::SeekFrom::End(0))
         .await
         .map_err(|e| anyhow!("Seek error: {}", e))?;
 
-    fs::File::open(Path::new(dir))
+    File::open(Path::new(dir))
         .await?
         .sync_all()
         .await
@@ -199,7 +199,7 @@ async fn help_rewrite(dir: &String, m: &Manifest, ext_magic: u16) -> Result<fs::
     Ok(fp)
 }
 
-async fn replay_manifest_file(file: &mut fs::File, ext_magic: u16) -> Result<(Manifest, u64)> {
+async fn replay_manifest_file(file: &mut File, ext_magic: u16) -> Result<(Manifest, u64)> {
     let meta = file
         .metadata()
         .await
@@ -236,21 +236,21 @@ async fn replay_manifest_file(file: &mut fs::File, ext_magic: u16) -> Result<(Ma
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 break;
             }
-            Err(e) => bail!(format!("Read MANIFEST error: {}", e)),
+            Err(e) => bail!("Read MANIFEST error: {}", e),
         };
         if length as u64 > meta.len() {
-            bail!(format!(
+            bail!(
                 "Buffer length: {} greater than file size: {}. Manifest file might be currupted.",
                 length,
                 meta.len()
-            ))
+            )
         }
         let checksum = match reader.read_u32().await {
             Ok(l) => l,
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 break;
             }
-            Err(e) => bail!(format!("Read MANIFEST error: {}", e)),
+            Err(e) => bail!("Read MANIFEST error: {}", e),
         };
         let mut buf = BytesMut::zeroed(length as usize);
         match reader.read_exact(&mut buf).await {

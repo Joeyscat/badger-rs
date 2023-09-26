@@ -8,6 +8,8 @@ pub mod option;
 mod skiplist;
 pub mod txn;
 mod util;
+mod value;
+mod vlog;
 
 mod memtable;
 

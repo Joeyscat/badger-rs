@@ -3,6 +3,7 @@ use std::time::{self, Duration};
 /// 1MB
 const MAX_VALUE_THRESHOLD: u32 = 1 << 20;
 
+#[derive(Debug, Clone)]
 pub struct Options {
     // required options.
     pub dir: String,
@@ -147,6 +148,7 @@ impl Default for CompressionType {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum ChecksumVerificationMode {
     NoVerification,
     OnTableRead,

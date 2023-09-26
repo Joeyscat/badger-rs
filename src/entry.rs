@@ -1,9 +1,4 @@
-const BIT_DELETE: u8 = 1 << 0;
-const BIT_VALUE_POINTER: u8 = 1 << 1;
-const BIT_DISCARD_EARLIER_VERSIONS: u8 = 1 << 2;
-const BIT_MERGE_ENTRY: u8 = 1 << 3;
-const BIT_TXN: u8 = 1 << 6;
-const BIT_FIN_TXN: u8 = 1 << 7;
+use crate::value::BIT_DELETE;
 
 pub struct Entry {
     pub key: Vec<u8>,
