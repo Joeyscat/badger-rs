@@ -2,7 +2,7 @@
 pub enum Error {
     /// The `value_log_file_size` option is not within the valid range.
     #[error("Invalid `value_log_file_size`: {0}, must be in range [1MB, 2GB)")]
-    ValueLogSize(u32),
+    ValueLogSize(usize),
 
     /// Key isn't found on a txn.get.
     #[error("Key not found")]

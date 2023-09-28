@@ -1,4 +1,3 @@
-use crate::item::Item;
 
 pub struct IteratorOptions {}
 
@@ -11,3 +10,6 @@ impl std::iter::Iterator for Iterator {
         todo!()
     }
 }
+
+
+pub struct Item {}

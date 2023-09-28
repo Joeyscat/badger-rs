@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::{
     entry::Entry,
-    item::Item,
+    iterator::Item,
     iterator::{Iterator, IteratorOptions},
 };
 

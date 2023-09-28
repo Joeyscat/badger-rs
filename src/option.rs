@@ -15,9 +15,9 @@ pub struct Options {
     pub stream_threads_num: u32,
 
     // find tuning options.
-    pub mem_table_size: u32,
-    pub base_table_size: u32,
-    pub base_level_size: u32,
+    pub mem_table_size: usize,
+    pub base_table_size: usize,
+    pub base_level_size: usize,
     pub level_size_multiplier: u32,
     pub table_size_multiplier: u32,
     pub max_levels: u32,
@@ -34,8 +34,8 @@ pub struct Options {
     pub num_level_zero_tables: u32,
     pub num_level_zero_tables_stall: u32,
 
-    pub value_log_file_size: u32,
-    pub value_log_max_entries: u32,
+    pub value_log_file_size: usize,
+    pub value_log_max_entries: usize,
 
     pub num_compactors: u32,
     pub compact_l0_on_close: bool,
