@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    io::ErrorKind::UnexpectedEof,
     path::Path,
 };
 
@@ -233,7 +234,7 @@ async fn replay_manifest_file(file: &mut File, ext_magic: u16) -> Result<(Manife
     loop {
         let length = match reader.read_u32().await {
             Ok(l) => l,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(e) if e.kind() == UnexpectedEof => {
                 break;
             }
             Err(e) => bail!("Read MANIFEST error: {}", e),
@@ -247,7 +248,7 @@ async fn replay_manifest_file(file: &mut File, ext_magic: u16) -> Result<(Manife
         }
         let checksum = match reader.read_u32().await {
             Ok(l) => l,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(e) if e.kind() == UnexpectedEof => {
                 break;
             }
             Err(e) => bail!("Read MANIFEST error: {}", e),
@@ -255,7 +256,7 @@ async fn replay_manifest_file(file: &mut File, ext_magic: u16) -> Result<(Manife
         let mut buf = BytesMut::zeroed(length as usize);
         match reader.read_exact(&mut buf).await {
             Ok(_) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(e) if e.kind() == UnexpectedEof => {
                 break;
             }
             Err(e) => bail!(e),
@@ -331,6 +332,15 @@ mod tests {
     fn test_crc32() {
         let r = CASTAGNOLI.checksum("hello world".as_bytes());
         println!("{}", r);
+
+        let mut d = CASTAGNOLI.digest();
+        d.update("hello world".as_bytes());
+        println!("{}", d.finalize());
+
+        let mut d = CASTAGNOLI.digest();
+        d.update("hello".as_bytes());
+        d.update(" world".as_bytes());
+        println!("{}", d.finalize());
     }
 
     #[tokio::test]

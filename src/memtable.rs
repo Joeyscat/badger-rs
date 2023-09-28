@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
-    io::{BufReader, Read},
+    f32::consts::E,
+    io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read},
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic,
@@ -8,13 +9,14 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Result};
+use bytes::BytesMut;
 use log::{debug, error};
 use rand::seq::SliceRandom;
 use tokio::{fs::remove_file, sync::Mutex};
 
 use crate::{
     entry::Entry,
-    entry::{ValuePointer, MAX_HEADER_SIZE},
+    entry::{HashReader, Header, ValuePointer, BIT_FIN_TXN, BIT_TXN, CRC_SIZE, MAX_HEADER_SIZE},
     error::Error,
     option::Options,
     skiplist::{self, ValueStruct},
@@ -124,7 +126,7 @@ impl MemTable {
     }
 
     fn update_skip_list(&mut self) -> Result<()> {
-        let end_off = self.wal.iterate(true, 0, self.replay_func())?;
+        let end_off = self.wal.iterate(0, self.replay_func())?;
 
         if (end_off as u32) < self.wal.size.load(Relaxed) {
             bail!(
@@ -244,7 +246,7 @@ impl LogFile {
 
     fn zero_next_entry(&mut self) {
         let start = self.write_at as usize;
-        let mut end = (self.write_at + MAX_HEADER_SIZE) as usize;
+        let mut end = start + MAX_HEADER_SIZE;
 
         if end > self.mmap_file.data.borrow().len() {
             end = self.mmap_file.data.borrow().len();
@@ -256,7 +258,7 @@ impl LogFile {
         self.mmap_file.data.borrow_mut()[start..end].fill(0_u8);
     }
 
-    fn iterate<F>(&self, read_only: bool, offset: usize, f: F) -> Result<usize>
+    fn iterate<F>(&self, offset: usize, mut f: F) -> Result<usize>
     where
         F: FnMut(Entry, ValuePointer) -> Result<()>,
     {
@@ -266,10 +268,135 @@ impl LogFile {
         }
 
         let reader = BufReader::new(self.mmap_file.new_reader(offset));
-        todo!()
+        let reader = Rc::new(RefCell::new(reader));
+
+        let mut last_commit = 0;
+        let mut valid_end_offset = 0;
+        let mut entries = vec![];
+        let mut vptrs = vec![];
+
+        loop {
+            let ent = match self.entry(Rc::clone(&reader), offset) {
+                Ok(ent) if ent.key.is_empty() => break,
+                Ok(ent) => ent,
+                // We have not reached the end of the file buf the entry we read is
+                // zero. This happens because we have truncated the file and zero'ed
+                // it out.
+                Err(e) if matches!(e.downcast_ref::<Error>(), Some(Error::VLogTruncate)) => {
+                    break;
+                }
+                Err(e) => bail!(e),
+            };
+
+            let vp = ValuePointer {
+                fid: self.fid,
+                offset: ent.offset,
+                len: ent.header_len + (ent.key.len() + ent.value.len() + CRC_SIZE) as u32,
+            };
+            offset += vp.len as usize;
+
+            match ent.meta {
+                meta if meta & BIT_TXN > 0 => {
+                    let txn_ts = Entry::parse_ts(&ent.key);
+                    if last_commit == 0 {
+                        last_commit = txn_ts;
+                    }
+                    if last_commit != txn_ts {
+                        break;
+                    }
+                    entries.push(ent);
+                    vptrs.push(vp);
+                }
+
+                meta if meta & BIT_FIN_TXN > 0 => {
+                    let txn_ts: u64 = match String::from_utf8(ent.value) {
+                        Ok(s) => match s.parse() {
+                            Ok(i) => i,
+                            _ => break,
+                        },
+                        _ => break,
+                    };
+                    if last_commit != txn_ts {
+                        break;
+                    }
+                    // Got the end of txn. Now we can store them.
+                    last_commit = 0;
+                    valid_end_offset = offset;
+
+                    let mut index = 0;
+                    for entx in &entries {
+                        let vpx = vptrs.get(index).unwrap();
+                        index += 1;
+                        if let Err(e) = f(entx.clone(), vpx.clone()) {
+                            bail!("Iterate function error: {}. file={}", e, self.path)
+                        }
+                    }
+
+                    entries.clear();
+                    vptrs.clear();
+                }
+
+                _ => {
+                    if last_commit != 0 {
+                        // This is most likely an entry which was moved as part of GC.
+                        // We should't get this entry in the middle of a transaction.
+                        break;
+                    }
+                    valid_end_offset = offset;
+
+                    if let Err(e) = f(ent, vp) {
+                        bail!("Iterate function error: {}. file={}", e, self.path)
+                    }
+                }
+            }
+        }
+
+        Ok(valid_end_offset)
     }
 
-    fn truncate(&self, offset: usize) -> Result<()> {
+    fn entry<R: BufRead>(&self, reader: Rc<RefCell<R>>, offset: usize) -> Result<Entry> {
+        let mut tee = HashReader::new(Rc::clone(&reader));
+        let header = Header::decode_from(&mut tee)?;
+        let header_len = tee.count();
+
+        if header.key_len > 1 << 16 {
+            bail!(Error::VLogTruncate)
+        }
+
+        let mut buf = BytesMut::zeroed((header.key_len + header.value_len) as usize);
+        match tee.read_exact(&mut buf) {
+            Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
+            Err(e) => bail!(e),
+            _ => {}
+        };
+        let (k, v) = buf.split_at(header.key_len);
+
+        let mut buf = [0; CRC_SIZE];
+        match reader.borrow_mut().read_exact(&mut buf) {
+            Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
+            Err(e) => bail!(e),
+            _ => {}
+        };
+        let crc = u32::from_be_bytes(buf);
+        if crc != tee.sum32() {
+            bail!(Error::VLogTruncate);
+        }
+
+        let e = Entry {
+            key: Vec::from(k),
+            value: Vec::from(v),
+            expires_at: header.expires_at,
+            offset: offset as u32,
+            user_meta: header.user_meta,
+            meta: header.meta,
+            header_len: header_len as u32,
+            val_threshold: 0,
+            version: 0,
+        };
+        Ok(e)
+    }
+
+    fn truncate(&self, _offset: usize) -> Result<()> {
         todo!()
     }
 }
@@ -294,7 +421,17 @@ struct MmapReader {
 
 impl Read for MmapReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        todo!()
+        if self.offset > self.data.borrow().len() {
+            return Err(std::io::Error::from(UnexpectedEof));
+        }
+
+        let bytes_to_read = std::cmp::min(buf.len(), self.data.borrow().len() - self.offset);
+
+        buf[..bytes_to_read]
+            .copy_from_slice(&self.data.borrow_mut()[self.offset..self.offset + bytes_to_read]);
+        self.offset += bytes_to_read;
+
+        Ok(bytes_to_read)
     }
 }
 

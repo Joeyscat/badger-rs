@@ -124,4 +124,7 @@ pub enum Error {
 
     #[error("Manifest external magic number doesn't match.\nExpected: {0}, got: {1}")]
     ManifestExtMagicMismatch(u16, u16),
+
+    #[error("Do truncate")]
+    VLogTruncate,
 }

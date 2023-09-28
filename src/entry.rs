@@ -1,6 +1,8 @@
-use std::io::{BufRead, Read};
+use std::{cell::RefCell, io::Read, rc::Rc};
 
 use anyhow::Result;
+
+use crate::manifest::CASTAGNOLI;
 
 pub const BIT_DELETE: u8 = 1 << 0;
 pub const BIT_VALUE_POINTER: u8 = 1 << 1;
@@ -9,8 +11,11 @@ pub const BIT_MERGE_ENTRY: u8 = 1 << 3;
 pub const BIT_TXN: u8 = 1 << 6;
 pub const BIT_FIN_TXN: u8 = 1 << 7;
 
-pub const MAX_HEADER_SIZE: u32 = 22;
+pub const MAX_HEADER_SIZE: usize = 22;
 
+pub const CRC_SIZE: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
 pub struct ValuePointer {
     pub fid: u32,
     pub len: u32,
@@ -18,16 +23,36 @@ pub struct ValuePointer {
 }
 
 pub struct Header {
-    key_len: u32,
-    value_len: u32,
-    expires_at: u64,
-    meta: u8,
-    user_meta: u8,
+    pub key_len: usize,
+    pub value_len: usize,
+    pub expires_at: u64,
+    pub meta: u8,
+    pub user_meta: u8,
 }
 
 impl Header {
-    pub fn decode_from(reader: impl BufRead) -> Result<Self> {
-        todo!()
+    pub fn decode_from<R: Read>(mut reader: R) -> Result<Self> {
+        let mut header = Header {
+            key_len: 0,
+            value_len: 0,
+            expires_at: 0,
+            meta: 0,
+            user_meta: 0,
+        };
+
+        let mut buf = [0; 1];
+        reader.read_exact(&mut buf)?;
+        header.meta = buf[0].clone();
+        reader.read_exact(&mut buf)?;
+        header.user_meta = buf[0].clone();
+        let mut buf = [0; 8];
+        reader.read_exact(&mut buf)?;
+        header.key_len = u64::from_be_bytes(buf) as usize;
+        let mut buf = [0; 8];
+        reader.read_exact(&mut buf)?;
+        header.value_len = u64::from_be_bytes(buf) as usize;
+
+        Ok(header)
     }
 
     /// Encode encodes the header into []byte. The provided []byte should be atleast 5 bytes. The
@@ -39,24 +64,43 @@ impl Header {
     pub fn encode(&self) {}
 }
 
-pub struct HashReader {}
+pub struct HashReader<'a, R: ?Sized> {
+    count: usize,
+    hash: crc::Digest<'a, u32>,
+    inner: Rc<RefCell<R>>,
+}
 
-impl Read for HashReader {
+impl<'a, R: Read> HashReader<'a, R> {
+    pub fn new(inner: Rc<RefCell<R>>) -> HashReader<'a, R> {
+        let hash = CASTAGNOLI.digest();
+        Self {
+            inner,
+            hash,
+            count: 0,
+        }
+    }
+
+    pub fn sum32(&self) -> u32 {
+        self.hash.clone().finalize()
+    }
+
+    pub fn count(&self) -> usize {
+        return self.count;
+    }
+}
+
+impl<'a, R: ?Sized + Read> Read for HashReader<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        todo!()
+        let bytes_read = self.inner.borrow_mut().read(buf)?;
+        self.count += bytes_read;
+
+        self.hash.update(&buf[..bytes_read]);
+
+        Ok(bytes_read)
     }
 }
 
-impl BufRead for HashReader {
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        todo!()
-    }
-
-    fn consume(&mut self, amt: usize) {
-        todo!()
-    }
-}
-
+#[derive(Debug, Clone)]
 pub struct Entry {
     pub key: Vec<u8>,
     pub value: Vec<u8>,
