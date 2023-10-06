@@ -49,7 +49,7 @@ pub async fn open(opt: Options) -> Result<DB> {
 
     let manifest_file = open_or_create_manifest_file(&opt).await?;
 
-    let mut _db = DB {
+    let mut db = DB {
         mt: None,
         imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
         next_mem_fid: 0,
@@ -61,12 +61,12 @@ pub async fn open(opt: Options) -> Result<DB> {
         is_closed: todo!(),
     };
 
-    _db.open_mem_tables()
+    db.open_mem_tables()
         .await
         .map_err(|e| anyhow!("Opening memtables error: {}", e))?;
 
-    _db.mt = Some(Mutex::new(
-        _db.new_mem_table()
+    db.mt = Some(Mutex::new(
+        db.new_mem_table()
             .await
             .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
     ));

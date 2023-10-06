@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     f32::consts::E,
+    fmt::Display,
     io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read},
     path::{Path, PathBuf},
     rc::Rc,
@@ -34,6 +35,19 @@ pub struct MemTable {
     buf: bytes::BytesMut,
 }
 
+impl Display for MemTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "(sl: {}, wal: {}, max_version: {}, buf: [u8;{}])",
+            self.sl.len(),
+            self.wal,
+            self.max_version.load(Relaxed),
+            self.buf.len()
+        )
+    }
+}
+
 pub async fn open_mem_table(
     opt: Options,
     fid: u32,
@@ -54,7 +68,7 @@ pub async fn open_mem_table(
         return Ok((mt, is_new_file));
     }
 
-    mt.update_skip_list()?;
+    mt.update_skip_list().await?;
 
     Ok((mt, false))
 }
@@ -125,10 +139,10 @@ impl MemTable {
         todo!()
     }
 
-    fn update_skip_list(&mut self) -> Result<()> {
+    async fn update_skip_list(&mut self) -> Result<()> {
         let end_off = self.wal.iterate(0, self.replay_func())?;
 
-        if (end_off as u32) < self.wal.size.load(Relaxed) {
+        if (end_off) < self.wal.size.load(Relaxed) {
             bail!(
                 "{}, end offset {} < size {}",
                 Error::TruncateNeeded,
@@ -137,7 +151,10 @@ impl MemTable {
             )
         }
 
-        self.wal.truncate(end_off)
+        self.wal
+            .truncate(end_off)
+            .await
+            .map_err(|e| anyhow!("Truncate logfile error: {}", e))
     }
 
     fn replay_func(&self) -> impl FnMut(Entry, ValuePointer) -> Result<()> + '_ {
@@ -258,16 +275,16 @@ impl LogFile {
         self.mmap_file.data.borrow_mut()[start..end].fill(0_u8);
     }
 
-    fn iterate<F>(&self, offset: usize, mut f: F) -> Result<usize>
+    fn iterate<F>(&self, offset: u32, mut f: F) -> Result<u32>
     where
         F: FnMut(Entry, ValuePointer) -> Result<()>,
     {
         let mut offset = offset;
         if offset == 0 {
-            offset = VLOG_HEADER_SIZE as usize;
+            offset = VLOG_HEADER_SIZE;
         }
 
-        let reader = BufReader::new(self.mmap_file.new_reader(offset));
+        let reader = BufReader::new(self.mmap_file.new_reader(offset as usize));
         let reader = Rc::new(RefCell::new(reader));
 
         let mut last_commit = 0;
@@ -276,7 +293,7 @@ impl LogFile {
         let mut vptrs = vec![];
 
         loop {
-            let ent = match self.entry(Rc::clone(&reader), offset) {
+            let ent = match self.entry(Rc::clone(&reader), offset as usize) {
                 Ok(ent) if ent.key.is_empty() => break,
                 Ok(ent) => ent,
                 // We have not reached the end of the file buf the entry we read is
@@ -293,7 +310,7 @@ impl LogFile {
                 offset: ent.offset,
                 len: ent.header_len + (ent.key.len() + ent.value.len() + CRC_SIZE) as u32,
             };
-            offset += vp.len as usize;
+            offset += vp.len;
 
             match ent.meta {
                 meta if meta & BIT_TXN > 0 => {
@@ -396,8 +413,27 @@ impl LogFile {
         Ok(e)
     }
 
-    fn truncate(&self, _offset: usize) -> Result<()> {
-        todo!()
+    async fn truncate(&mut self, offset: u32) -> Result<()> {
+        if self.mmap_file.file.lock().await.fd.metadata()?.len() as u32 == offset {
+            return Ok(());
+        }
+        self.size.store(offset, Relaxed);
+        self.mmap_file.truncate(offset as u64)
+    }
+}
+
+impl Display for LogFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "(mmap_file: {}, path: {}, fid: {}, size: {}, base_iv: [u8;{}], write_at: {})",
+            self.mmap_file,
+            self.path,
+            self.fid,
+            self.size.load(Relaxed),
+            self.base_iv.len(),
+            self.write_at
+        )
     }
 }
 
@@ -405,12 +441,50 @@ pub struct MmapFile {
     data: Rc<RefCell<memmap2::MmapMut>>,
     file: Mutex<Filex>,
 }
+
 impl MmapFile {
     fn new_reader(&self, offset: usize) -> MmapReader {
         MmapReader {
             data: Rc::clone(&self.data),
             offset,
         }
+    }
+
+    fn sync(&self) -> Result<()> {
+        self.data
+            .borrow_mut()
+            .flush()
+            .map_err(|e| anyhow!("Flush mmapfile error: {}", e))
+    }
+
+    fn truncate(&mut self, max_size: u64) -> Result<()> {
+        self.sync()?;
+        self.file
+            .get_mut()
+            .fd
+            .set_len(max_size as u64)
+            .map_err(|e| anyhow!("Truncate mmapfile error: {}", e))?;
+
+        unsafe {
+            self.data
+                .borrow_mut()
+                .remap(
+                    max_size as usize,
+                    memmap2::RemapOptions::new().may_move(true),
+                )
+                .map_err(|e| anyhow!("Remap file error: {}", e))
+        }
+    }
+}
+
+impl Display for MmapFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "(data: [u8;{}], file: {})",
+            self.data.borrow().len(),
+            self.file.blocking_lock()
+        )
     }
 }
 
@@ -454,22 +528,54 @@ impl Drop for MmapFile {
     }
 }
 
+impl Display for Filex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "(fd: {:?}, path: {:?})", self.fd, self.path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn test_open_log_file() {
-        let mut opt = Options::default();
-        let fid = 1;
-        let oopt = std::fs::OpenOptions::new();
-        let r = LogFile::open(opt, fid, &oopt, 0).await;
-        let (mt, is_new) = r.unwrap();
+        let opt = Options::default();
+        let r = LogFile::open(
+            opt.clone(),
+            1,
+            &std::fs::OpenOptions::new(),
+            opt.mem_table_size,
+        )
+        .await;
+        match r.unwrap() {
+            (lf, true) => {
+                println!("(lf, true)");
+                println!("{}", lf);
+            }
+            (_, _) => {
+                println!("(lf, false)");
+            }
+        };
     }
 
     #[tokio::test]
     async fn test_open_mem_table() {
-        // let r = open_mem_table(opt, fid, oopt).await;
-        // let (mt, is_new) = r.unwrap();
+        let r = open_mem_table(
+            Options::default(),
+            0,
+            std::fs::File::options().write(true).create(true),
+        )
+        .await;
+
+        match r.unwrap() {
+            (mt, true) => {
+                println!("(mt, true)");
+                println!("{}", mt);
+            }
+            (_, _) => {
+                println!("(mt, false)");
+            }
+        };
     }
 }
