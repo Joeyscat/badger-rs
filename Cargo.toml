@@ -12,6 +12,7 @@ crc = "3.0.1"
 crossbeam-epoch = "0.9.15"
 crossbeam-skiplist = { version = "0.1.1", features = ["crossbeam-epoch"] }
 futures = "0.3.28"
+integer-encoding = "4.0.0"
 log = "0.4.20"
 memmap2 = "0.8.0"
 prost = "0.12.1"
@@ -19,6 +20,7 @@ rand = "0.8.5"
 thiserror = "1.0.48"
 tokio = { version = "1.32.0", features = ["sync", "fs", "io-util", "macros", "rt-multi-thread"] }
 tracing = "0.1.37"
+tracing-subscriber = "0.3.17"
 
 [build-dependencies]
 prost-build = "0.12.1"

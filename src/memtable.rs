@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    f32::consts::E,
     fmt::Display,
     io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read},
     path::{Path, PathBuf},
@@ -13,7 +12,7 @@ use anyhow::{anyhow, bail, Result};
 use bytes::BytesMut;
 use log::{debug, error};
 use rand::seq::SliceRandom;
-use tokio::{fs::remove_file, sync::Mutex};
+use tokio::fs::remove_file;
 
 use crate::{
     entry::Entry,
@@ -27,8 +26,7 @@ use crate::{
 pub const MEM_FILE_EXT: &str = ".mem";
 
 pub struct MemTable {
-    pub sl: crossbeam_skiplist::SkipList<Vec<u8>, skiplist::ValueStruct>,
-    guard: crossbeam_epoch::Guard,
+    pub sl: crossbeam_skiplist::SkipMap<Vec<u8>, skiplist::ValueStruct>,
     pub wal: LogFile,
     max_version: atomic::AtomicU64,
     // opt: Options,
@@ -56,8 +54,7 @@ pub async fn open_mem_table(
     let (wal, is_new_file) = LogFile::open(opt.clone(), fid, oopt, 2 * opt.mem_table_size).await?;
 
     let mut mt = MemTable {
-        sl: crossbeam_skiplist::SkipList::new(crossbeam_epoch::Collector::new()),
-        guard: crossbeam_epoch::pin(),
+        sl: crossbeam_skiplist::SkipMap::new(),
         wal,
         max_version: Default::default(),
         // opt: opt,
@@ -79,11 +76,9 @@ pub async fn open_mmap_file<P: AsRef<Path>>(
     sz: usize,
 ) -> Result<(MmapFile, bool)> {
     let mut is_new_file = false;
-    let mut ooptx = oopt.clone();
-    let fd = ooptx
-        .truncate(true)
+    let fd = oopt
         .open(&path)
-        .map_err(|e| anyhow!("Open file error: {}", e))?;
+        .map_err(|e| anyhow!("Open file({:?}) error: {}", &path.as_ref(), e))?;
     let meta = fd.metadata()?;
 
     let mut file_size = meta.len() as usize;
@@ -99,14 +94,7 @@ pub async fn open_mmap_file<P: AsRef<Path>>(
         memmap2::MmapOptions::new()
             .len(file_size)
             .map_mut(&fd)
-            .map_err(|e| {
-                anyhow!(
-                    "Mmapping {} with size {} error: {}",
-                    path.to_string_lossy(),
-                    file_size,
-                    e
-                )
-            })?
+            .map_err(|e| anyhow!("Mmapping {:?} with size {} error: {}", path, file_size, e))?
     };
 
     if file_size == 0 {
@@ -128,21 +116,18 @@ pub async fn open_mmap_file<P: AsRef<Path>>(
     Ok((
         MmapFile {
             data: Rc::new(RefCell::new(mmap_mut)),
-            file: Mutex::new(Filex { fd, path }),
+            file: std::sync::Mutex::new(Filex { fd, path }),
         },
         is_new_file,
     ))
 }
 
 impl MemTable {
-    pub fn decr_ref(&self) {
-        todo!()
-    }
-
     async fn update_skip_list(&mut self) -> Result<()> {
         let end_off = self.wal.iterate(0, self.replay_func())?;
 
-        if (end_off) < self.wal.size.load(Relaxed) {
+        let read_only = false;
+        if end_off < self.wal.size.load(Relaxed) && read_only {
             bail!(
                 "{}, end offset {} < size {}",
                 Error::TruncateNeeded,
@@ -181,7 +166,7 @@ impl MemTable {
                 version: 0,
             };
 
-            self.sl.insert(e.key, v, &self.guard);
+            self.sl.insert(e.key, v);
             Ok(())
         }
     }
@@ -252,8 +237,10 @@ impl LogFile {
     /// +----------------+------------------+------------------+
     fn bootstrap(&mut self) -> Result<()> {
         let mut buf = [0; 20];
+
+        buf[..8].copy_from_slice(&u64::to_be_bytes(0));
         let mut rng = rand::thread_rng();
-        buf.shuffle(&mut rng);
+        buf[8..].shuffle(&mut rng);
         self.mmap_file.data.borrow_mut()[..20].copy_from_slice(&buf);
 
         self.zero_next_entry();
@@ -288,7 +275,7 @@ impl LogFile {
         let reader = Rc::new(RefCell::new(reader));
 
         let mut last_commit = 0;
-        let mut valid_end_offset = 0;
+        let mut valid_end_offset = offset;
         let mut entries = vec![];
         let mut vptrs = vec![];
 
@@ -386,7 +373,7 @@ impl LogFile {
             Err(e) => bail!(e),
             _ => {}
         };
-        let (k, v) = buf.split_at(header.key_len);
+        let (k, v) = buf.split_at(header.key_len as usize);
 
         let mut buf = [0; CRC_SIZE];
         match reader.borrow_mut().read_exact(&mut buf) {
@@ -414,11 +401,24 @@ impl LogFile {
     }
 
     async fn truncate(&mut self, offset: u32) -> Result<()> {
-        if self.mmap_file.file.lock().await.fd.metadata()?.len() as u32 == offset {
+        if self
+            .mmap_file
+            .file
+            .lock()
+            .map_err(|e| anyhow!("Get locked fd error: {}", e))?
+            .fd
+            .metadata()?
+            .len() as u32
+            == offset
+        {
             return Ok(());
         }
         self.size.store(offset, Relaxed);
         self.mmap_file.truncate(offset as u64)
+    }
+
+    pub fn delete(self) -> Result<()> {
+        self.mmap_file.delete()
     }
 }
 
@@ -439,7 +439,7 @@ impl Display for LogFile {
 
 pub struct MmapFile {
     data: Rc<RefCell<memmap2::MmapMut>>,
-    file: Mutex<Filex>,
+    file: std::sync::Mutex<Filex>,
 }
 
 impl MmapFile {
@@ -460,7 +460,8 @@ impl MmapFile {
     fn truncate(&mut self, max_size: u64) -> Result<()> {
         self.sync()?;
         self.file
-            .get_mut()
+            .lock()
+            .map_err(|e| anyhow!("Get locked fd error: {}", e))?
             .fd
             .set_len(max_size as u64)
             .map_err(|e| anyhow!("Truncate mmapfile error: {}", e))?;
@@ -475,16 +476,34 @@ impl MmapFile {
                 .map_err(|e| anyhow!("Remap file error: {}", e))
         }
     }
+
+    fn delete(self) -> Result<()> {
+        drop(self.data); // TODO munmap?
+
+        let p = &self
+            .file
+            .lock()
+            .map_err(|e| anyhow!("Get locked fd error: {}", e))?
+            .path
+            .clone();
+
+        if let Err(e) = self
+            .file
+            .lock()
+            .map_err(|e| anyhow!("Get locked fd error: {}", e))?
+            .fd
+            .set_len(0)
+        {
+            error!("Truncate file({:#?}) error: {}", p, e);
+        }
+
+        std::fs::remove_file(p).map_err(|e| anyhow!("Remove file({:#?}) error: {}", p, e))
+    }
 }
 
 impl Display for MmapFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "(data: [u8;{}], file: {})",
-            self.data.borrow().len(),
-            self.file.blocking_lock()
-        )
+        write!(f, "(data: [u8;{}], file: _)", self.data.borrow().len(),)
     }
 }
 
@@ -514,20 +533,6 @@ pub struct Filex {
     path: PathBuf,
 }
 
-impl Drop for MmapFile {
-    fn drop(&mut self) {
-        let p = &self.file.blocking_lock().path.clone();
-
-        if let Err(e) = self.file.get_mut().fd.set_len(0) {
-            error!("Truncate file({:#?}) error: {}", p, e);
-        }
-
-        if let Err(e) = std::fs::remove_file(&self.file.blocking_lock().path) {
-            error!("Remove file({:#?}) error: {}", p, e);
-        }
-    }
-}
-
 impl Display for Filex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(fd: {:?}, path: {:?})", self.fd, self.path)
@@ -539,12 +544,13 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_open_log_file() {
-        let opt = Options::default();
+    async fn test_log_file_open() {
+        let mut opt = Options::default();
+        opt.dir = "/tmp/x/badger3".to_string();
         let r = LogFile::open(
             opt.clone(),
             1,
-            &std::fs::OpenOptions::new(),
+            std::fs::File::options().read(true).write(true).create(true),
             opt.mem_table_size,
         )
         .await;
@@ -553,18 +559,21 @@ mod tests {
                 println!("(lf, true)");
                 println!("{}", lf);
             }
-            (_, _) => {
+            (lf, _) => {
                 println!("(lf, false)");
+                println!("{}", lf);
             }
         };
     }
 
     #[tokio::test]
     async fn test_open_mem_table() {
+        let mut opt = Options::default();
+        opt.dir = "/tmp/x/badger3".to_string();
         let r = open_mem_table(
-            Options::default(),
-            0,
-            std::fs::File::options().write(true).create(true),
+            opt,
+            1,
+            std::fs::File::options().read(true).write(true).create(true),
         )
         .await;
 
@@ -573,8 +582,9 @@ mod tests {
                 println!("(mt, true)");
                 println!("{}", mt);
             }
-            (_, _) => {
+            (mt, _) => {
                 println!("(mt, false)");
+                println!("{}", mt);
             }
         };
     }

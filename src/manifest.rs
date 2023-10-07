@@ -155,9 +155,9 @@ async fn help_rewrite(dir: &String, m: &Manifest, ext_magic: u16) -> Result<File
     let rewrite_path = Path::new(&dir).join(MANIFEST_REWRITE_FILENAME);
 
     let mut fp = File::options()
+        .read(true)
         .write(true)
         .create(true)
-        .truncate(true)
         .open(&rewrite_path)
         .await?;
 
@@ -186,7 +186,11 @@ async fn help_rewrite(dir: &String, m: &Manifest, ext_magic: u16) -> Result<File
     let manifest_path = Path::new(&dir).join(MANIFEST_FILENAME);
     rename(rewrite_path, &manifest_path).await?;
 
-    let mut fp = File::options().write(true).open(manifest_path).await?;
+    let mut fp = File::options()
+        .read(true)
+        .write(true)
+        .open(manifest_path)
+        .await?;
     fp.seek(std::io::SeekFrom::End(0))
         .await
         .map_err(|e| anyhow!("Seek error: {}", e))?;
@@ -346,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn test_open_manifest_file() {
         let mut opt = Options::default();
-        opt.dir = "/tmp/x/badger".to_string();
+        opt.dir = "/tmp/x/badger3".to_string();
         let r = open_or_create_manifest_file(&opt).await;
         println!("{:#?}", r.unwrap())
     }

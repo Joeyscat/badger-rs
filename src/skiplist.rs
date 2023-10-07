@@ -1,5 +1,9 @@
 use std::fmt::Display;
 
+pub struct SkipList {
+    inner: crossbeam_skiplist::SkipList<Vec<u8>, ValueStruct>,
+}
+
 pub struct ValueStruct {
     pub meta: u8,
     pub user_meta: u8,

@@ -1,8 +1,8 @@
-use std::{cell::RefCell, io::Read, rc::Rc};
+use anyhow::{anyhow, bail, Result};
+use integer_encoding::VarIntReader;
+use std::{cell::RefCell, io::ErrorKind::UnexpectedEof, io::Read, rc::Rc};
 
-use anyhow::Result;
-
-use crate::manifest::CASTAGNOLI;
+use crate::{error::Error, manifest::CASTAGNOLI};
 
 pub const BIT_DELETE: u8 = 1 << 0;
 pub const BIT_VALUE_POINTER: u8 = 1 << 1;
@@ -23,8 +23,8 @@ pub struct ValuePointer {
 }
 
 pub struct Header {
-    pub key_len: usize,
-    pub value_len: usize,
+    pub key_len: u64,
+    pub value_len: u64,
     pub expires_at: u64,
     pub meta: u8,
     pub user_meta: u8,
@@ -40,17 +40,24 @@ impl Header {
             user_meta: 0,
         };
 
-        let mut buf = [0; 1];
-        reader.read_exact(&mut buf)?;
-        header.meta = buf[0].clone();
-        reader.read_exact(&mut buf)?;
-        header.user_meta = buf[0].clone();
-        let mut buf = [0; 8];
-        reader.read_exact(&mut buf)?;
-        header.key_len = u64::from_be_bytes(buf) as usize;
-        let mut buf = [0; 8];
-        reader.read_exact(&mut buf)?;
-        header.value_len = u64::from_be_bytes(buf) as usize;
+        let mut buf = [0; 2];
+        match reader.read_exact(&mut buf) {
+            Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
+            Err(e) => bail!(e),
+            _ => {}
+        };
+        header.meta = buf[0];
+        header.user_meta = buf[1];
+
+        header.key_len = reader
+            .read_varint::<u64>()
+            .map_err(|e| anyhow!("read_varint(key_len) error:{}", e))?;
+        header.value_len = reader
+            .read_varint::<u64>()
+            .map_err(|e| anyhow!("read_varint(value_len) error:{}", e))?;
+        header.expires_at = reader
+            .read_varint::<u64>()
+            .map_err(|e| anyhow!("read_varint(expires_at) error:{}", e))?;
 
         Ok(header)
     }
@@ -61,7 +68,9 @@ impl Header {
     /// +------+----------+------------+--------------+-----------+
     /// | Meta | UserMeta | Key Length | Value Length | ExpiresAt |
     /// +------+----------+------------+--------------+-----------+
-    pub fn encode(&self) {}
+    pub fn encode(&self) {
+        todo!()
+    }
 }
 
 pub struct HashReader<'a, R: ?Sized> {
@@ -131,7 +140,7 @@ impl Entry {
         }
     }
 
-    pub fn key_with_ts(key: Vec<u8>, ts: u64) -> Vec<u8> {
+    pub fn key_with_ts(_key: Vec<u8>, _ts: u64) -> Vec<u8> {
         todo!()
     }
 
@@ -141,7 +150,7 @@ impl Entry {
         }
         let mut bs = [0; 8];
         bs.copy_from_slice(&key[key.len() - 8..]);
-        u64::from_be_bytes(bs)
+        u64::MAX - u64::from_be_bytes(bs)
     }
 }
 

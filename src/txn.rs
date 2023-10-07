@@ -37,7 +37,7 @@ impl Txn {
         self.modify(e).await
     }
 
-    async fn modify(&mut self, e: Entry) -> Result<()> {
+    async fn modify(&mut self, _e: Entry) -> Result<()> {
         // TODO checks
 
         unimplemented!()

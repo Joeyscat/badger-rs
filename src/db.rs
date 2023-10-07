@@ -1,11 +1,6 @@
-use std::sync::atomic;
-
 use anyhow::{anyhow, bail, Result};
-use log::error;
-use tokio::{
-    fs::read_dir,
-    sync::{mpsc::Receiver, Mutex},
-};
+use log::{error, info};
+use tokio::{fs::read_dir, sync::Mutex};
 
 use crate::{
     error::Error,
@@ -30,51 +25,51 @@ pub struct DB {
     // lc: LevelsController,
     // vlog: ValueLog,
     // write_ch: Receiver<Request>,
-    flush_ch: Receiver<MemTable>,
-    close_once: std::sync::Once,
+    // flush_ch: Receiver<MemTable>,
+    // close_once: std::sync::Once,
 
-    block_writes: atomic::AtomicU32,
-    is_closed: atomic::AtomicU32,
-}
-
-async fn check_options(opt: &Options) -> Result<()> {
-    if !(opt.value_log_file_size < 2 << 30 && opt.value_log_file_size >= 1 << 20) {
-        anyhow::bail!(Error::ValueLogSize(opt.value_log_file_size))
-    }
-    Ok(())
-}
-
-pub async fn open(opt: Options) -> Result<DB> {
-    check_options(&opt).await?;
-
-    let manifest_file = open_or_create_manifest_file(&opt).await?;
-
-    let mut db = DB {
-        mt: None,
-        imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
-        next_mem_fid: 0,
-        opt,
-        manifest: manifest_file,
-        flush_ch: todo!(),
-        close_once: todo!(),
-        block_writes: todo!(),
-        is_closed: todo!(),
-    };
-
-    db.open_mem_tables()
-        .await
-        .map_err(|e| anyhow!("Opening memtables error: {}", e))?;
-
-    db.mt = Some(Mutex::new(
-        db.new_mem_table()
-            .await
-            .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
-    ));
-
-    unimplemented!()
+    // block_writes: atomic::AtomicU32,
+    // is_closed: atomic::AtomicU32,
 }
 
 impl DB {
+    pub async fn open(opt: Options) -> Result<Self> {
+        Self::check_options(&opt)?;
+
+        let manifest_file = open_or_create_manifest_file(&opt).await?;
+
+        let mut db = DB {
+            mt: None,
+            imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
+            next_mem_fid: 0,
+            opt,
+            manifest: manifest_file,
+            // flush_ch: todo!(),
+            // close_once: todo!(),
+            // block_writes: todo!(),
+            // is_closed: todo!(),
+        };
+
+        db.open_mem_tables()
+            .await
+            .map_err(|e| anyhow!("Opening memtables error: {}", e))?;
+
+        db.mt = Some(Mutex::new(
+            db.new_mem_table()
+                .await
+                .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
+        ));
+
+        Ok(db)
+    }
+
+    fn check_options(opt: &Options) -> Result<()> {
+        if !(opt.value_log_file_size < 2 << 30 && opt.value_log_file_size >= 1 << 20) {
+            anyhow::bail!(Error::ValueLogSize(opt.value_log_file_size))
+        }
+        Ok(())
+    }
+
     pub fn new_transaction(&self, _update: bool) -> Result<Txn> {
         unimplemented!()
     }
@@ -118,12 +113,13 @@ impl DB {
             let (mt, _) = open_mem_table(
                 self.opt.clone(),
                 fid.to_owned(),
-                std::fs::File::options().write(true),
+                std::fs::File::options().read(true).write(true),
             )
             .await?;
 
             if mt.sl.is_empty() {
-                mt.decr_ref();
+                info!("The skiplist is empty and the corresponding mem file needs to be deleted.");
+                mt.wal.delete()?;
                 continue;
             }
             self.imm.get_mut().push(mt);
@@ -142,7 +138,7 @@ impl DB {
         match open_mem_table(
             self.opt.clone(),
             self.next_mem_fid,
-            std::fs::File::options().write(true).create(true),
+            std::fs::File::options().read(true).write(true).create(true),
         )
         .await
         {
@@ -165,8 +161,54 @@ impl DB {
     }
 }
 
-impl Drop for DB {
-    fn drop(&mut self) {
-        todo!()
+// impl Display for DB {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+//     }
+// }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+    fn init_log() {
+        tracing_subscriber::registry().with(fmt::layer()).init();
+    }
+
+    async fn create_test_db(opt: Options) -> DB {
+        let mf = open_or_create_manifest_file(&opt).await.unwrap();
+        DB {
+            mt: None,
+            imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
+            next_mem_fid: 0,
+            opt,
+            manifest: mf,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_mem_table() {
+        init_log();
+        let mut opt = Options::default();
+        opt.dir = "/tmp/x/badger3".to_string();
+        let mut db = create_test_db(opt).await;
+        db.next_mem_fid = 1;
+
+        let mt = db.new_mem_table().await.unwrap();
+
+        println!("{}", mt);
+    }
+
+    #[tokio::test]
+    async fn test_open_mem_tables() {
+        init_log();
+        let mut opt = Options::default();
+        opt.dir = "/tmp/x/badger3".to_string();
+        let mut db = create_test_db(opt).await;
+
+        db.open_mem_tables().await.unwrap();
+
+        println!("{}", &db.imm.lock().await.len());
     }
 }
