@@ -1,9 +1,12 @@
+use std::{cell::RefCell, rc::Rc};
+
 use anyhow::{anyhow, bail, Result};
 use log::{error, info};
 use tokio::{fs::read_dir, sync::Mutex};
 
 use crate::{
     error::Error,
+    level::LevelsController,
     manifest::{open_or_create_manifest_file, ManifestFile},
     memtable::{open_mem_table, MemTable, MEM_FILE_EXT},
     option::Options,
@@ -21,8 +24,8 @@ pub struct DB {
     next_mem_fid: u32,
 
     opt: Options,
-    manifest: ManifestFile,
-    // lc: LevelsController,
+    manifest: Rc<RefCell<ManifestFile>>,
+    lc: LevelsController,
     // vlog: ValueLog,
     // write_ch: Receiver<Request>,
     // flush_ch: Receiver<MemTable>,
@@ -36,14 +39,20 @@ impl DB {
     pub async fn open(opt: Options) -> Result<Self> {
         Self::check_options(&opt)?;
 
-        let manifest_file = open_or_create_manifest_file(&opt).await?;
+        let mf = open_or_create_manifest_file(&opt).await?;
+        let lc = LevelsController::new(
+            opt.clone(),
+            Rc::clone(&Rc::new(mf.manifest.lock().await.clone())),
+        )?;
+        let mf = Rc::new(RefCell::new(mf));
 
         let mut db = DB {
             mt: None,
+            lc,
             imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
             next_mem_fid: 0,
-            opt,
-            manifest: manifest_file,
+            opt: opt.clone(),
+            manifest: Rc::clone(&mf),
             // flush_ch: todo!(),
             // close_once: todo!(),
             // block_writes: todo!(),
@@ -178,12 +187,19 @@ mod tests {
 
     async fn create_test_db(opt: Options) -> DB {
         let mf = open_or_create_manifest_file(&opt).await.unwrap();
+        let lc = LevelsController::new(
+            opt.clone(),
+            Rc::clone(&&Rc::new(mf.manifest.lock().await.clone())),
+        )
+        .unwrap();
+        let manifest = Rc::new(RefCell::new(mf));
         DB {
             mt: None,
             imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
             next_mem_fid: 0,
             opt,
-            manifest: mf,
+            manifest,
+            lc,
         }
     }
 

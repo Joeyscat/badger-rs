@@ -37,7 +37,7 @@ pub const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 /// Each of these if treated atomically, and contains a sequence of
 /// [`ManifestChange`]'s (file creations/deletions) which we use to
 /// reconstruct the manifest at startup.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Manifest {
     pub levels: Vec<LevelManifest>,
     pub tables: HashMap<u64, TableManifest>,
@@ -80,14 +80,14 @@ fn new_create_change(id: u64, level: u32, key_id: u64) -> pb::ManifestChange {
 
 /// LevelManifest contains information about LSM tree levels
 /// in the MANIFEST file.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LevelManifest {
     pub tables: HashSet<u64>,
 }
 
 /// TableManifest contains information about a specific table
 /// in the LSM tree.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct TableManifest {
     pub level: u8,
     pub key_id: u64,
@@ -100,7 +100,7 @@ pub struct ManifestFile {
 
     external_magic: u16,
 
-    manifest: Mutex<Manifest>,
+    pub manifest: Mutex<Manifest>,
 }
 
 pub async fn open_or_create_manifest_file(opt: &Options) -> Result<ManifestFile> {
