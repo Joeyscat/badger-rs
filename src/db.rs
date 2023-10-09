@@ -43,7 +43,8 @@ impl DB {
         let lc = LevelsController::new(
             opt.clone(),
             Rc::clone(&Rc::new(mf.manifest.lock().await.clone())),
-        )?;
+        )
+        .await?;
         let mf = Rc::new(RefCell::new(mf));
 
         let mut db = DB {
@@ -191,6 +192,7 @@ mod tests {
             opt.clone(),
             Rc::clone(&&Rc::new(mf.manifest.lock().await.clone())),
         )
+        .await
         .unwrap();
         let manifest = Rc::new(RefCell::new(mf));
         DB {

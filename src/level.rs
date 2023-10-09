@@ -1,17 +1,20 @@
-use std::{cell::RefCell, collections::HashMap, fs::remove_file, rc::Rc};
-
 use anyhow::{anyhow, bail, Result};
-use log::{info, warn};
+use log::info;
+use std::{collections::HashMap, fs::remove_file, rc::Rc, sync::atomic::AtomicU64};
 
 use crate::{
     compaction::{CompactStatus, LevelCompactStatus},
     level_handler::LevelHandler,
     manifest::Manifest,
     option::Options,
-    util,
+    table::Table,
+    util::{self, file::open_mmap_file},
 };
 
 pub struct LevelsController {
+    next_file_id: AtomicU64,
+    l0_stalls_ms: AtomicU64,
+
     levels: Vec<LevelHandler>,
     manifest: Rc<Manifest>,
     opt: Options,
@@ -20,7 +23,7 @@ pub struct LevelsController {
 }
 
 impl LevelsController {
-    pub fn new(opt: Options, mf: Rc<Manifest>) -> Result<Self> {
+    pub async fn new(opt: Options, mf: Rc<Manifest>) -> Result<Self> {
         assert!(opt.num_level_zero_tables_stall > opt.num_level_zero_tables);
         let mut levels = Vec::with_capacity(opt.max_levels as usize);
         let mut levelsx = Vec::with_capacity(opt.max_levels as usize);
@@ -31,7 +34,59 @@ impl LevelsController {
         }
         revert_to_manifest(opt.clone(), &mf, util::get_id_map(opt.dir.to_owned())?)?;
 
-        let s = Self {
+        // TODO Parallelization
+        let mut tables: Vec<Vec<Table>> = Vec::with_capacity(opt.max_levels as usize);
+        let mut max_file_id: u64 = 0;
+        let mut num_opened: u32 = 0;
+        for (file_id, tm) in &mf.tables {
+            let file_id = file_id.to_owned();
+            let filename = util::table::new_filename(file_id, &opt.dir);
+            if file_id > max_file_id {
+                max_file_id = file_id;
+            }
+
+            let (mfile, _) = open_mmap_file(
+                filename.clone(),
+                std::fs::File::options().read(true).write(true),
+                0,
+            )
+            .await?;
+            let t = match Table::open(mfile, opt.clone()) {
+                Ok(t) => t,
+                // Err(e) =>{} ignore table which checksum mismatch
+                Err(e) => {
+                    bail!("Opening table {}: {}", filename, e)
+                }
+            };
+            match tables.get_mut(tm.level as usize) {
+                Some(v) => {
+                    v.push(t);
+                }
+                None => {
+                    let mut v = Vec::new();
+                    v.push(t);
+                    tables.insert(tm.level as usize, v);
+                }
+            };
+
+            num_opened += 1;
+            info!(
+                "{}/{} tables opened: {}",
+                num_opened,
+                mf.tables.len(),
+                filename
+            );
+        }
+
+        for index in 0..tables.len() {
+            if let Some(h) = levels.get_mut(index) {
+                h.init_table(tables.remove(index));
+            }
+        }
+
+        let lc = Self {
+            next_file_id: (max_file_id + 1).into(),
+            l0_stalls_ms: 0.into(),
             levels,
             manifest: mf,
             opt,
