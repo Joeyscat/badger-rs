@@ -1,7 +1,7 @@
 pub mod file;
 pub mod table;
 
-use std::{collections::HashMap, fs, path::Path, cmp::Ordering};
+use std::{collections::HashMap, fs, path::Path};
 
 use anyhow::Result;
 
@@ -13,9 +13,4 @@ pub fn get_id_map<P: AsRef<Path>>(dir: P) -> Result<HashMap<u64, ()>> {
         .map(|s| (s, ()))
         .collect::<HashMap<u64, ()>>();
     Ok(m)
-}
-
-
-pub fn compare_keys(k1: &Vec<u8>, k2: &Vec<u8>)->Ordering {
-    todo!()
 }

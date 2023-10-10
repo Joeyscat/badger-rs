@@ -54,8 +54,8 @@ pub struct Options {
     /// the same directory. Use this options with caution.
     pub bypass_lock_guard: bool,
 
-    /// `checksum_verification_mode` decides when db should verify checksum for SSTable blocks.
-    pub checksum_verification_mode: ChecksumVerificationMode,
+    /// `cv_mode` decides when db should verify checksum for SSTable blocks.
+    pub cv_mode: ChecksumVerificationMode,
 
     /// `detect_conflicts` determines whether the transactions would be checked for
     /// conflicts. The transactions can be processed at a higher rate when
@@ -122,7 +122,7 @@ impl Default for Options {
             encryption_key_rotation_duration: time::Duration::from_secs(60 * 60 * 24 * 10),
 
             bypass_lock_guard: Default::default(),
-            checksum_verification_mode: Default::default(),
+            cv_mode: Default::default(),
             detect_conflicts: true,
             namespace_offset: -1,
             external_magic_version: Default::default(),
@@ -148,7 +148,7 @@ impl Default for CompressionType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChecksumVerificationMode {
     NoVerification,
     OnTableRead,

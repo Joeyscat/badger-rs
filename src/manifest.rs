@@ -18,6 +18,7 @@ use crate::{
     error::Error,
     option::Options,
     pb::{self},
+    util::file::sync_dir,
 };
 
 const MANIFEST_FILENAME: &str = "MANIFEST";
@@ -195,11 +196,7 @@ async fn help_rewrite(dir: &String, m: &Manifest, ext_magic: u16) -> Result<File
         .await
         .map_err(|e| anyhow!("Seek error: {}", e))?;
 
-    File::open(Path::new(dir))
-        .await?
-        .sync_all()
-        .await
-        .map_err(|e| anyhow!("Sync {} error: {}", dir, e))?;
+    sync_dir(dir)?;
 
     Ok(fp)
 }

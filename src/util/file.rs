@@ -9,6 +9,12 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use log::error;
 
+pub fn sync_dir<P: AsRef<Path>>(dir: P) -> Result<()> {
+    std::fs::File::open(&dir)?
+        .sync_all()
+        .map_err(|e| anyhow!("Sync {:?} error: {}", dir.as_ref(), e))
+}
+
 pub struct MmapFile {
     pub data: Rc<RefCell<memmap2::MmapMut>>,
     pub file: std::sync::Mutex<Filex>,

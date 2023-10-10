@@ -7,8 +7,11 @@ use crate::{
     level_handler::LevelHandler,
     manifest::Manifest,
     option::Options,
-    table::Table,
-    util::{self, file::open_mmap_file},
+    table::{self, Table},
+    util::{
+        self,
+        file::{open_mmap_file, sync_dir},
+    },
 };
 
 pub struct LevelsController {
@@ -32,7 +35,8 @@ impl LevelsController {
             levels.push(LevelHandler::new(opt.clone(), i));
             levelsx.push(LevelCompactStatus::new())
         }
-        revert_to_manifest(opt.clone(), &mf, util::get_id_map(opt.dir.to_owned())?)?;
+        let dir = opt.dir.to_owned();
+        revert_to_manifest(opt.clone(), &mf, util::get_id_map(dir.clone())?)?;
 
         // TODO Parallelization
         let mut tables: Vec<Vec<Table>> = Vec::with_capacity(opt.max_levels as usize);
@@ -40,7 +44,7 @@ impl LevelsController {
         let mut num_opened: u32 = 0;
         for (file_id, tm) in &mf.tables {
             let file_id = file_id.to_owned();
-            let filename = util::table::new_filename(file_id, &opt.dir);
+            let filename = util::table::new_filename(file_id, &dir);
             if file_id > max_file_id {
                 max_file_id = file_id;
             }
@@ -51,7 +55,8 @@ impl LevelsController {
                 0,
             )
             .await?;
-            let t = match Table::open(mfile, opt.clone()) {
+            let topt = table::Options::build_table_options(opt.clone());
+            let t = match Table::open(mfile, topt) {
                 Ok(t) => t,
                 // Err(e) =>{} ignore table which checksum mismatch
                 Err(e) => {
@@ -96,7 +101,18 @@ impl LevelsController {
             },
         };
 
-        todo!()
+        lc.validate()?;
+
+        sync_dir(dir)?;
+
+        Ok(lc)
+    }
+
+    fn validate(&self) -> Result<()> {
+        for l in &self.levels {
+            l.validate()?;
+        }
+        Ok(())
     }
 }
 
