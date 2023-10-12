@@ -5,6 +5,7 @@ pub mod option;
 pub mod txn;
 
 mod compaction;
+mod fb;
 mod entry;
 mod level;
 mod level_handler;

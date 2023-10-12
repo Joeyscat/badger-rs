@@ -11,6 +11,7 @@ bytes = "1.5.0"
 crc = "3.0.1"
 crossbeam-epoch = "0.9.15"
 crossbeam-skiplist = { version = "0.1.1", features = ["crossbeam-epoch"] }
+flatbuffers = "23.5.26"
 futures = "0.3.28"
 integer-encoding = "4.0.0"
 log = "0.4.20"

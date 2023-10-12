@@ -83,6 +83,24 @@ impl MmapFile {
 
         std::fs::remove_file(p).map_err(|e| anyhow!("Remove file({:#?}) error: {}", p, e))
     }
+
+    pub fn path(&self) -> Result<String> {
+        Ok(self
+            .file
+            .lock()
+            .map_err(|e| anyhow!("Get locked fd error: {}", e))?
+            .path()?
+            .to_string())
+    }
+
+    pub fn filename(&self) -> Result<String> {
+        Ok(self
+            .file
+            .lock()
+            .map_err(|e| anyhow!("Get locked fd error: {}", e))?
+            .filename()?
+            .to_string())
+    }
 }
 
 impl Display for MmapFile {
@@ -169,6 +187,18 @@ pub struct Filex {
 impl Filex {
     pub fn new(fd: std::fs::File, path: PathBuf) -> Self {
         Self { fd, path }
+    }
+
+    pub fn path(&self) -> Result<&str> {
+        self.path.to_str().ok_or(anyhow!("convert to string error"))
+    }
+
+    pub fn filename(&self) -> Result<&str> {
+        self.path
+            .file_name()
+            .ok_or(anyhow!("has no valid filename"))?
+            .to_str()
+            .ok_or(anyhow!("convert to string error"))
     }
 }
 
