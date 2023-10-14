@@ -139,19 +139,6 @@ impl Entry {
             ..Entry::default()
         }
     }
-
-    pub fn key_with_ts(_key: Vec<u8>, _ts: u64) -> Vec<u8> {
-        todo!()
-    }
-
-    pub fn parse_ts(key: &Vec<u8>) -> u64 {
-        if key.len() < 8 {
-            return 0;
-        }
-        let mut bs = [0; 8];
-        bs.copy_from_slice(&key[key.len() - 8..]);
-        u64::MAX - u64::from_be_bytes(bs)
-    }
 }
 
 impl Default for Entry {

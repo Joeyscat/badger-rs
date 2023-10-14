@@ -20,7 +20,7 @@ use crate::{
     error::Error,
     option::Options,
     skiplist::{self, ValueStruct},
-    util::file::{open_mmap_file, MmapFile},
+    util::{file::{open_mmap_file, MmapFile}, kv::parse_ts},
     vlog::VLOG_HEADER_SIZE,
 };
 
@@ -103,7 +103,7 @@ impl MemTable {
                 );
                 first = false;
             }
-            let ts = Entry::parse_ts(&e.key);
+            let ts = parse_ts(&e.key);
             if ts > self.max_version.load(Relaxed) {
                 self.max_version.store(ts, Relaxed);
             }
@@ -250,7 +250,7 @@ impl LogFile {
 
             match ent.meta {
                 meta if meta & BIT_TXN > 0 => {
-                    let txn_ts = Entry::parse_ts(&ent.key);
+                    let txn_ts = parse_ts(&ent.key);
                     if last_commit == 0 {
                         last_commit = txn_ts;
                     }

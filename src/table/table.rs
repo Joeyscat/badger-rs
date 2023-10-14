@@ -1,25 +1,49 @@
 use std::io;
+use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use bytes::BytesMut;
 use prost::Message;
 
 use crate::option::{self, ChecksumVerificationMode::*};
+use crate::util::file::open_mmap_file;
 use crate::util::{file::MmapFile, table::parse_file_id};
 use crate::{fb, pb, util};
 
+use super::builder::Builder;
+
+#[derive(Debug, Clone, Copy)]
 pub struct Options {
+    /// Maximum size of the table.
     pub table_size: u64,
+    /// The false positive probability of bloom filter.
+    pub bloom_false_positive: f64,
+    /// The size of each block inside SSTable in bytes.
     pub block_size: u32,
+
     pub cv_mode: option::ChecksumVerificationMode,
 }
 
-impl Options {
-    pub fn build_table_options(opt: option::Options) -> Self {
+impl Options {}
+
+impl From<option::Options> for Options {
+    fn from(value: option::Options) -> Self {
         Self {
-            table_size: opt.base_table_size as u64,
-            block_size: opt.block_size,
-            cv_mode: opt.cv_mode,
+            table_size: value.base_table_size as u64,
+            bloom_false_positive: 0_f64,
+            block_size: value.block_size,
+            cv_mode: value.cv_mode,
+        }
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            table_size: Default::default(),
+            bloom_false_positive: Default::default(),
+            block_size: Default::default(),
+            cv_mode: Default::default(),
         }
     }
 }
@@ -74,6 +98,41 @@ impl Table {
         Ok(table)
     }
 
+    pub async fn create<P: AsRef<Path>>(filepath: P, builder: Builder) -> Result<Self> {
+        let opts = builder.opts;
+        let bd = builder.done();
+        let mfile = match open_mmap_file(
+            filepath,
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .create_new(true),
+            bd.size as usize,
+        )
+        .await
+        {
+            Ok((mfile, true)) => mfile, // expected
+            Ok((mfile, false)) => {
+                bail!("file already exists: {:?}", mfile.filename())
+            }
+            Err(e) => {
+                bail!("failed to create file: {}", e)
+            }
+        };
+
+        let written = bd.dump(&mut mfile.data.borrow_mut());
+        assert_eq!(
+            written,
+            mfile.data.borrow().len() as u32,
+            "written != data.len"
+        );
+
+        mfile.sync()?;
+
+        Self::open(mfile, opts)
+    }
+
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -84,6 +143,10 @@ impl Table {
 
     pub fn biggest(&self) -> &Vec<u8> {
         &self.biggest
+    }
+
+    pub fn has_bloom_filter(&self) -> bool {
+        self.has_bloom_filter
     }
 
     pub fn new_iterator(&self, opt: usize) -> iter::Iterator {
@@ -139,7 +202,7 @@ impl Table {
         self.index_start = read_pos;
         let buf = self.read_or_panic(read_pos, self.index_size);
 
-        util::verify_checksum(buf, expected_checksum).map_err(|e| {
+        util::verify_checksum(&buf, expected_checksum).map_err(|e| {
             anyhow!(
                 "failed to verify checksum for table {}: {}",
                 self.mmap_file.filename().unwrap(),
@@ -199,13 +262,22 @@ mod iter {
 
 #[cfg(test)]
 mod tests {
-    use crate::{option::Options, util::file::open_mmap_file};
+    use std::env::temp_dir;
+
+    use rand::RngCore;
+
+    use crate::{
+        option,
+        skiplist::ValueStruct,
+        table::builder::Builder,
+        util::{file::open_mmap_file, kv::key_with_ts},
+    };
 
     use super::Table;
 
     #[tokio::test]
     async fn test_init_index() {
-        let opt = Options::default();
+        let opt = option::Options::default();
         let (mfile, _) = open_mmap_file(
             "/tmp/x/badger-helloworld/000001.sst",
             std::fs::File::options().read(true).write(true),
@@ -224,7 +296,7 @@ mod tests {
             index_start: 0,
             index_size: 0,
             has_bloom_filter: false,
-            opt: crate::table::Options::build_table_options(opt),
+            opt: opt.into(),
         };
 
         t.init_index().unwrap();
@@ -247,5 +319,58 @@ mod tests {
         );
         println!("offsets[0].len: {}", offset.len());
         println!("offsets[0].offset: {}", offset.offset());
+    }
+
+    #[tokio::test]
+    async fn test_index_no_encryption_or_compression() {
+        let mut opts = super::Options::default();
+        opts.block_size = 4 * 1024;
+        opts.bloom_false_positive = 0.01;
+        opts.table_size = 30 << 20;
+
+        test_index_with_options(opts).await;
+    }
+
+    async fn test_index_with_options(opts: super::Options) {
+        let keys_count = 100000;
+
+        let mut builder = Builder::new(opts);
+        let filepath = temp_dir().join(format!("{}.sst", rand::thread_rng().next_u32()));
+        let mut block_first_keys = Vec::new();
+        let mut block_count = 0;
+        for i in 0..keys_count {
+            let k = key_with_ts(format!("{:016x}", i).into(), i);
+            let vs = ValueStruct::new(format!("{}", i).into_bytes());
+
+            if i == 0 {
+                block_first_keys.push(k.clone());
+                block_count = 1;
+            } else if builder.should_finish_block(&k, &vs) {
+                block_first_keys.push(k.clone());
+                block_count += 1;
+            }
+            builder.add(k, vs, 0);
+        }
+
+        let mut tbl = match Table::create(filepath.clone(), builder).await {
+            Ok(t) => t,
+            Err(e) => panic!("{}", e),
+        };
+
+        tbl.init_index().unwrap();
+        let idx = tbl.get_table_index().unwrap();
+        let off_len = idx.offsets().unwrap().len();
+        assert_eq!(block_count, off_len, "block count should be equal");
+        for i in 0..off_len {
+            let offset = idx.offsets().unwrap().get(i);
+            assert_eq!(
+                block_first_keys[i],
+                offset.key().unwrap().bytes().to_vec(),
+                "block first key should be equal"
+            );
+        }
+        assert_eq!(keys_count, idx.max_version(), "max version should be equal");
+        drop(tbl);
+        std::fs::remove_file(filepath).unwrap();
     }
 }

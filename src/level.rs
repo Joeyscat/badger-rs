@@ -55,7 +55,7 @@ impl LevelsController {
                 0,
             )
             .await?;
-            let topt = table::Options::build_table_options(opt.clone());
+            let topt = opt.clone().into();
             let t = match Table::open(mfile, topt) {
                 Ok(t) => t,
                 // Err(e) =>{} ignore table which checksum mismatch

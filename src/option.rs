@@ -148,7 +148,7 @@ impl Default for CompressionType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChecksumVerificationMode {
     NoVerification,
     OnTableRead,
