@@ -110,7 +110,7 @@ impl Builder {
     }
 
     fn add_helper(&mut self, key: Vec<u8>, value: ValueStruct, value_len: u32) {
-        self.key_hashes.push(bloom::hash(&parse_key(&key)));
+        self.key_hashes.push(bloom::hash(parse_key(&key)));
 
         let version = parse_ts(&key);
         if version > self.max_version {
