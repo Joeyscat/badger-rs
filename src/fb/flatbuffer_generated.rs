@@ -62,6 +62,28 @@ impl<'a> TableIndex<'a> {
     builder.finish()
   }
 
+  pub fn unpack(&self) -> TableIndexT {
+    let offsets = self.offsets().map(|x| {
+      x.iter().map(|t| t.unpack()).collect()
+    });
+    let bloom_filter = self.bloom_filter().map(|x| {
+      x.into_iter().collect()
+    });
+    let max_version = self.max_version();
+    let key_count = self.key_count();
+    let uncompressed_size = self.uncompressed_size();
+    let on_disk_size = self.on_disk_size();
+    let stale_data_size = self.stale_data_size();
+    TableIndexT {
+      offsets,
+      bloom_filter,
+      max_version,
+      key_count,
+      uncompressed_size,
+      on_disk_size,
+      stale_data_size,
+    }
+  }
 
   #[inline]
   pub fn offsets(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<BlockOffset<'a>>>> {
@@ -217,6 +239,57 @@ impl core::fmt::Debug for TableIndex<'_> {
       ds.finish()
   }
 }
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableIndexT {
+  pub offsets: Option<Vec<BlockOffsetT>>,
+  pub bloom_filter: Option<Vec<u8>>,
+  pub max_version: u64,
+  pub key_count: u32,
+  pub uncompressed_size: u32,
+  pub on_disk_size: u32,
+  pub stale_data_size: u32,
+}
+impl Default for TableIndexT {
+  fn default() -> Self {
+    Self {
+      offsets: None,
+      bloom_filter: None,
+      max_version: 0,
+      key_count: 0,
+      uncompressed_size: 0,
+      on_disk_size: 0,
+      stale_data_size: 0,
+    }
+  }
+}
+impl TableIndexT {
+  pub fn pack<'b>(
+    &self,
+    _fbb: &mut flatbuffers::FlatBufferBuilder<'b>
+  ) -> flatbuffers::WIPOffset<TableIndex<'b>> {
+    let offsets = self.offsets.as_ref().map(|x|{
+      let w: Vec<_> = x.iter().map(|t| t.pack(_fbb)).collect();_fbb.create_vector(&w)
+    });
+    let bloom_filter = self.bloom_filter.as_ref().map(|x|{
+      _fbb.create_vector(x)
+    });
+    let max_version = self.max_version;
+    let key_count = self.key_count;
+    let uncompressed_size = self.uncompressed_size;
+    let on_disk_size = self.on_disk_size;
+    let stale_data_size = self.stale_data_size;
+    TableIndex::create(_fbb, &TableIndexArgs{
+      offsets,
+      bloom_filter,
+      max_version,
+      key_count,
+      uncompressed_size,
+      on_disk_size,
+      stale_data_size,
+    })
+  }
+}
 pub enum BlockOffsetOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -253,6 +326,18 @@ impl<'a> BlockOffset<'a> {
     builder.finish()
   }
 
+  pub fn unpack(&self) -> BlockOffsetT {
+    let key = self.key().map(|x| {
+      x.into_iter().collect()
+    });
+    let offset = self.offset();
+    let len = self.len();
+    BlockOffsetT {
+      key,
+      offset,
+      len,
+    }
+  }
 
   #[inline]
   pub fn key(&self) -> Option<flatbuffers::Vector<'a, u8>> {
@@ -346,6 +431,39 @@ impl core::fmt::Debug for BlockOffset<'_> {
       ds.field("offset", &self.offset());
       ds.field("len", &self.len());
       ds.finish()
+  }
+}
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockOffsetT {
+  pub key: Option<Vec<u8>>,
+  pub offset: u32,
+  pub len: u32,
+}
+impl Default for BlockOffsetT {
+  fn default() -> Self {
+    Self {
+      key: None,
+      offset: 0,
+      len: 0,
+    }
+  }
+}
+impl BlockOffsetT {
+  pub fn pack<'b>(
+    &self,
+    _fbb: &mut flatbuffers::FlatBufferBuilder<'b>
+  ) -> flatbuffers::WIPOffset<BlockOffset<'b>> {
+    let key = self.key.as_ref().map(|x|{
+      _fbb.create_vector(x)
+    });
+    let offset = self.offset;
+    let len = self.len;
+    BlockOffset::create(_fbb, &BlockOffsetArgs{
+      key,
+      offset,
+      len,
+    })
   }
 }
 #[inline]

@@ -30,7 +30,7 @@ pub fn verify_checksum(data: &Vec<u8>, expected: pb::Checksum) -> Result<()> {
     Ok(())
 }
 
-pub fn calculate_checksum(data: &Vec<u8>, ca: pb::checksum::Algorithm) -> u64 {
+pub fn calculate_checksum(data: &[u8], ca: pb::checksum::Algorithm) -> u64 {
     return match ca {
         pb::checksum::Algorithm::Crc32c => CASTAGNOLI.checksum(data) as u64,
         pb::checksum::Algorithm::XxHash64 => panic!("xxhash not supported"),

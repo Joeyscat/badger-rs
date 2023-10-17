@@ -1,10 +1,12 @@
 use std::ops::{Div, Mul};
 
 use bytes::BytesMut;
+use flatbuffers::{FlatBufferBuilder, UOffsetT};
 use integer_encoding::VarInt;
 use prost::Message;
 
 use crate::{
+    fb::{self, BlockOffsetT},
     pb::{self, checksum::Algorithm::Crc32c},
     skiplist::ValueStruct,
     util::{
@@ -103,10 +105,6 @@ impl Builder {
         bd.block_list = self.block_list;
 
         bd
-    }
-
-    fn build_index(&self, bloom: Vec<u8>) -> (Vec<u8>, u32) {
-        todo!()
     }
 
     fn add_helper(&mut self, key: Vec<u8>, value: ValueStruct, value_len: u32) {
@@ -223,12 +221,51 @@ impl Builder {
         self.cur_block.end += add_size;
     }
 
-    fn calculate_checksum(&self, data: &Vec<u8>) -> Vec<u8> {
+    fn calculate_checksum(&self, data: &[u8]) -> Vec<u8> {
         let cs = pb::Checksum {
             algo: Crc32c.into(),
             sum: calculate_checksum(data, Crc32c),
         };
         cs.encode_to_vec()
+    }
+
+    fn build_index(&mut self, bloom: &[u8]) -> (Vec<u8>, u32) {
+        let mut builder = flatbuffers::FlatBufferBuilder::new();
+        let bg_off = if bloom.len() != 0 {
+            builder.create_vector(&bloom)
+        } else {
+            flatbuffers::WIPOffset::new(0)
+        };
+
+        let (bo_list, data_size) =
+            self.block_list
+                .iter()
+                .fold((vec![], 0), |(mut bo_list, mut data_size), bl| {
+                    bo_list.push(BlockOffsetT {
+                        key: Some(bl.base_key.to_vec()),
+                        offset: data_size,
+                        len: bl.end,
+                    });
+                    data_size += bl.end;
+                    (bo_list, data_size)
+                });
+        self.on_disk_size += data_size;
+        let x = fb::TableIndexT {
+            offsets: Some(bo_list),
+            bloom_filter: Some(bg_off.encode_to_vec()),
+            max_version: self.max_version,
+            key_count: self.key_hashes.len() as u32,
+            uncompressed_size: 0,
+            on_disk_size: self.on_disk_size,
+            stale_data_size: 0,
+        }
+        .pack(&mut builder);
+        builder.finish(x, None);
+        let buf = builder.finished_data();
+
+        // TODO let on_disk_size = self.on_disk_size + buf.len() as u32;
+
+        (buf.to_vec(), data_size)
     }
 }
 

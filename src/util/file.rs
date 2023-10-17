@@ -207,3 +207,46 @@ impl Display for Filex {
         write!(f, "(fd: {:?}, path: {:?})", self.fd, self.path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::open_mmap_file;
+
+    #[tokio::test]
+    async fn test_mmap_read_write() {
+        let path = format!("/tmp/mmaptest-{}", rand::random::<u64>());
+        let (mfile, new) = open_mmap_file(
+            path.clone(),
+            &std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true),
+            1 << 20,
+        )
+        .await
+        .unwrap();
+        assert!(new);
+
+        let mut buf = vec![0u8; 1024];
+        for i in 0..1024 {
+            buf[i] = i as u8;
+        }
+
+        mfile.data.borrow_mut()[..1024].copy_from_slice(&buf[..]);
+        mfile.sync().unwrap();
+
+        let (mfile, new) = open_mmap_file(
+            path,
+            &std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true),
+            0,
+        )
+        .await
+        .unwrap();
+        assert!(!new);
+
+        assert_eq!(mfile.data.borrow()[..1024], buf[..]);
+    }
+}

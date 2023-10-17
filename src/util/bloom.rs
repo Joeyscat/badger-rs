@@ -64,8 +64,8 @@ impl Filter {
         }
     }
 
-    pub fn bloom(&self) -> Vec<u8> {
-        self.0.clone()
+    pub fn bloom(&self) -> &[u8] {
+        &self.0
     }
 }
 

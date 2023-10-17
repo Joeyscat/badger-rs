@@ -335,7 +335,6 @@ mod tests {
         let keys_count = 100000;
 
         let mut builder = Builder::new(opts);
-        let filepath = temp_dir().join(format!("{}.sst", rand::thread_rng().next_u32()));
         let mut block_first_keys = Vec::new();
         let mut block_count = 0;
         for i in 0..keys_count {
@@ -352,6 +351,7 @@ mod tests {
             builder.add(k, vs, 0);
         }
 
+        let filepath = temp_dir().join(format!("{}.sst", rand::thread_rng().next_u32()));
         let mut tbl = match Table::create(filepath.clone(), builder).await {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
