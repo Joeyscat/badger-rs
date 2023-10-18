@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use crate::{
@@ -17,7 +19,7 @@ impl Txn {
         unimplemented!()
     }
 
-    pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+    pub async fn set(&mut self, key: Vec<u8>, value: Arc<Vec<u8>>) -> Result<()> {
         self.set_entry(Entry::new(key, value)).await
     }
 

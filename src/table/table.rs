@@ -1,4 +1,3 @@
-use std::io;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Result};
@@ -10,7 +9,7 @@ use crate::util::file::open_mmap_file;
 use crate::util::{file::MmapFile, table::parse_file_id};
 use crate::{fb, pb, util};
 
-use super::builder::Builder;
+use super::{Builder, Iterator};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -149,7 +148,7 @@ impl Table {
         self.has_bloom_filter
     }
 
-    pub fn new_iterator(&self, opt: usize) -> iter::Iterator {
+    pub fn new_iterator(&self, opt: usize) -> Iterator {
         todo!()
     }
 
@@ -230,33 +229,11 @@ impl Table {
         Ok(flatbuffers::root::<fb::TableIndex>(&self.index_buf)?)
     }
 
-    fn read(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
-        let d = self.mmap_file.data.borrow();
-        if offset + size > d.len() {
-            return Err(anyhow::Error::new(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "early eof",
-            )));
-        }
-        Ok(d[offset..offset + size].to_vec())
-    }
-
     fn read_or_panic(&self, offset: usize, size: usize) -> Vec<u8> {
-        match self.read(offset, size) {
+        match self.mmap_file.read(offset, size) {
             Ok(d) => d,
             Err(e) => panic!("mfile read error: {}", e),
         }
-    }
-}
-
-mod iter {
-    use std::rc::Rc;
-
-    use super::Table;
-
-    pub struct Iterator {
-        table: Rc<Table>,
-        bpos: usize,
     }
 }
 
@@ -268,9 +245,9 @@ mod tests {
 
     use crate::{
         option,
-        skiplist::ValueStruct,
         table::builder::Builder,
         util::{file::open_mmap_file, kv::key_with_ts},
+        value::ValueStruct,
     };
 
     use super::Table;
@@ -339,7 +316,7 @@ mod tests {
         let mut block_count = 0;
         for i in 0..keys_count {
             let k = key_with_ts(format!("{:016x}", i).into(), i);
-            let vs = ValueStruct::new(format!("{}", i).into_bytes());
+            let vs = ValueStruct::new(format!("{}", i).into_bytes().into());
 
             if i == 0 {
                 block_first_keys.push(k.clone());

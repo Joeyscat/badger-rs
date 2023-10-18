@@ -27,6 +27,18 @@ impl MmapFile {
             file: std::sync::Mutex::new(file),
         }
     }
+
+    pub fn read(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
+        let d = self.data.borrow();
+        if offset + size > d.len() {
+            return Err(anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "early eof",
+            )));
+        }
+        Ok(d[offset..offset + size].to_vec())
+    }
+
     pub fn new_reader(&self, offset: usize) -> MmapReader {
         MmapReader {
             data: Rc::clone(&self.data),

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use integer_encoding::VarIntReader;
-use std::{cell::RefCell, io::ErrorKind::UnexpectedEof, io::Read, rc::Rc};
+use std::{cell::RefCell, io::ErrorKind::UnexpectedEof, io::Read, rc::Rc, sync::Arc};
 
 use crate::{error::Error, manifest::CASTAGNOLI};
 
@@ -112,7 +112,7 @@ impl<'a, R: ?Sized + Read> Read for HashReader<'a, R> {
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub key: Vec<u8>,
-    pub value: Vec<u8>,
+    pub value: Arc<Vec<u8>>,
     pub expires_at: u64,
     pub version: u64,
     pub offset: u32,
@@ -124,7 +124,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn new(key: Vec<u8>, value: Vec<u8>) -> Self {
+    pub fn new(key: Vec<u8>, value: Arc<Vec<u8>>) -> Self {
         Self {
             key,
             value,

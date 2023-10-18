@@ -19,15 +19,18 @@ use crate::{
     entry::{HashReader, Header, ValuePointer, BIT_FIN_TXN, BIT_TXN, CRC_SIZE, MAX_HEADER_SIZE},
     error::Error,
     option::Options,
-    skiplist::{self, ValueStruct},
-    util::{file::{open_mmap_file, MmapFile}, kv::parse_ts},
+    util::{
+        file::{open_mmap_file, MmapFile},
+        kv::parse_ts,
+    },
+    value::ValueStruct,
     vlog::VLOG_HEADER_SIZE,
 };
 
 pub const MEM_FILE_EXT: &str = ".mem";
 
 pub struct MemTable {
-    pub sl: crossbeam_skiplist::SkipMap<Vec<u8>, skiplist::ValueStruct>,
+    pub sl: crossbeam_skiplist::SkipMap<Vec<u8>, ValueStruct>,
     pub wal: LogFile,
     max_version: atomic::AtomicU64,
     // opt: Options,
@@ -262,7 +265,7 @@ impl LogFile {
                 }
 
                 meta if meta & BIT_FIN_TXN > 0 => {
-                    let txn_ts: u64 = match String::from_utf8(ent.value) {
+                    let txn_ts: u64 = match String::from_utf8(ent.value.to_vec()) {
                         Ok(s) => match s.parse() {
                             Ok(i) => i,
                             _ => break,
@@ -337,7 +340,7 @@ impl LogFile {
 
         let e = Entry {
             key: Vec::from(k),
-            value: Vec::from(v),
+            value: Vec::from(v).into(),
             expires_at: header.expires_at,
             offset: offset as u32,
             user_meta: header.user_meta,

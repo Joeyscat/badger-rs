@@ -1,19 +1,17 @@
 use std::ops::{Div, Mul};
 
-use bytes::BytesMut;
-use flatbuffers::{FlatBufferBuilder, UOffsetT};
 use integer_encoding::VarInt;
 use prost::Message;
 
 use crate::{
     fb::{self, BlockOffsetT},
     pb::{self, checksum::Algorithm::Crc32c},
-    skiplist::ValueStruct,
     util::{
         bloom::{self, bloom_bits_per_key, Filter},
         calculate_checksum,
         kv::{parse_key, parse_ts},
     },
+    value::ValueStruct,
 };
 
 use super::Options;
@@ -72,10 +70,10 @@ impl Builder {
         if bd.size == 0 {
             return vec![];
         }
-        let mut buf = BytesMut::with_capacity(bd.size as usize);
+        let mut buf = vec![0; bd.size as usize];
         let written = bd.dump(&mut buf);
         assert_eq!(written, bd.size);
-        buf.to_vec()
+        buf
     }
 
     pub(crate) fn done(mut self) -> BuildData {
@@ -126,7 +124,7 @@ impl Builder {
         assert!(diff_key.len() <= u16::MAX as usize);
 
         // store current entry's offset
-        self.cur_block.entry_offsets.push(self.cur_block.end);
+        self.cur_block.entry_offsets.push(self.cur_block.end as u32);
 
         let overlap = (key_len - diff_key.len()) as u16;
         let diff = diff_key.len() as u16;
@@ -169,10 +167,11 @@ impl Builder {
         // 6: header size for entry
         let estimated_size = self.cur_block.end
             + 6
-            + key.len() as u32
-            + value.encoded_size() as u32
-            + entrys_offsets_size;
-        assert!(self.cur_block.end + estimated_size < u32::MAX);
+            + key.len()
+            + value.encoded_size()
+            + entrys_offsets_size as usize;
+        let estimated_size = estimated_size as u32;
+        assert!(self.cur_block.end as u32 + estimated_size < u32::MAX);
 
         return estimated_size > self.opts.block_size;
     }
@@ -216,7 +215,7 @@ impl Builder {
     }
 
     fn append(&mut self, data: Vec<u8>) {
-        let add_size = data.len() as u32;
+        let add_size = data.len();
         self.cur_block.data.extend_from_slice(&data);
         self.cur_block.end += add_size;
     }
@@ -244,9 +243,9 @@ impl Builder {
                     bo_list.push(BlockOffsetT {
                         key: Some(bl.base_key.to_vec()),
                         offset: data_size,
-                        len: bl.end,
+                        len: bl.end as u32,
                     });
-                    data_size += bl.end;
+                    data_size += bl.end as u32;
                     (bo_list, data_size)
                 });
         self.on_disk_size += data_size;
@@ -274,7 +273,7 @@ struct Bblock {
     data: Vec<u8>,
     base_key: Vec<u8>,
     entry_offsets: Vec<u32>,
-    end: u32, // TODO remove??
+    end: usize, // TODO remove??
 }
 
 impl Bblock {
@@ -296,28 +295,27 @@ pub(crate) struct BuildData {
 }
 
 impl BuildData {
-    pub(crate) fn dump<'a>(&self, buf: &'a [u8]) -> u32 {
+    pub(crate) fn dump(&self, buf: &mut [u8]) -> u32 {
         let mut written = 0;
-        let mut buf: BytesMut = buf.into();
 
         self.block_list.iter().for_each(|b| {
-            buf.extend_from_slice(&b.data[..b.end as usize]);
+            buf[written..written + b.end].copy_from_slice(&b.data[..b.end]);
             written += b.end;
         });
 
-        buf.extend_from_slice(&self.index);
         let len = self.index.len() as u32;
-        written += len;
-        buf.extend_from_slice(&len.to_be_bytes());
+        buf[written..written + len as usize].copy_from_slice(&self.index);
+        written += len as usize;
+        buf[written..written + 4].copy_from_slice(&len.to_be_bytes());
         written += 4;
 
-        buf.extend_from_slice(&self.checksum);
         let len = self.checksum.len() as u32;
-        written += len;
-        buf.extend_from_slice(&len.to_be_bytes());
+        buf[written..written + len as usize].copy_from_slice(&self.checksum);
+        written += len as usize;
+        buf[written..written + 4].copy_from_slice(&len.to_be_bytes());
         written += 4;
 
-        written
+        written as u32
     }
 
     fn empty() -> BuildData {
@@ -336,9 +334,25 @@ mod tests {
 
     use rand::RngCore;
 
-    use crate::table::{Options, Table};
+    use crate::{
+        table::{Options, Table},
+        util::kv::key_with_ts,
+        value::ValueStruct,
+    };
 
     use super::Builder;
+
+    fn build_test_builder(key_counts: u32, opts: Options) -> Builder {
+        let mut builder = Builder::new(opts);
+        for i in 0..key_counts {
+            builder.add(
+                key_with_ts(format!("{:016x}", i).into(), i as u64),
+                ValueStruct::new(format!("value{:04}", i).into_bytes().into()),
+                0,
+            );
+        }
+        builder
+    }
 
     async fn build_test_table(prefix: &str, n: u32, opts: Options) -> Table {
         let opts = if opts.block_size == 0 {
@@ -392,8 +406,21 @@ mod tests {
         assert!(!tab.has_bloom_filter(), "shoud not has bloom filter");
 
         let iter = tab.new_iterator(0);
+        todo!()
     }
 
     #[test]
-    fn test_with_bloom_filter() {}
+    fn test_with_bloom_filter() {
+        todo!()
+    }
+
+    #[test]
+    fn test_dump_build_data() {
+        let opts = Options::default();
+        let builder = build_test_builder(100, opts);
+        let bd = builder.done();
+        let mut buf = vec![0; bd.size as usize];
+        let written = bd.dump(&mut buf);
+        assert_eq!(written, bd.size);
+    }
 }

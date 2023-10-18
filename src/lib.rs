@@ -5,8 +5,8 @@ pub mod option;
 pub mod txn;
 
 mod compaction;
-mod fb;
 mod entry;
+mod fb;
 mod level;
 mod level_handler;
 mod manifest;
@@ -14,6 +14,7 @@ mod memtable;
 mod skiplist;
 mod table;
 mod util;
+mod value;
 mod vlog;
 
 mod pb {
