@@ -392,11 +392,15 @@ impl Display for LogFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test::{bt, TempDir};
 
     #[tokio::test]
     async fn test_log_file_open() {
+        let test_dir = TempDir::rand_dir();
+        bt::initdb_with_cli(test_dir.dir.as_str());
+
         let mut opt = Options::default();
-        opt.dir = "/tmp/x/badger3".to_string();
+        opt.dir = test_dir.dir.clone();
         let r = LogFile::open(
             opt.clone(),
             1,
@@ -418,8 +422,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_mem_table() {
+        let test_dir = TempDir::rand_dir();
+        bt::initdb_with_cli(test_dir.dir.as_str());
+
         let mut opt = Options::default();
-        opt.dir = "/tmp/x/badger3".to_string();
+        opt.dir = test_dir.dir.clone();
         let r = open_mem_table(
             opt,
             1,

@@ -13,6 +13,7 @@ mod manifest;
 mod memtable;
 mod skiplist;
 mod table;
+mod test;
 mod util;
 mod value;
 mod vlog;

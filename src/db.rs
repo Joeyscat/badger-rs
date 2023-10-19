@@ -180,6 +180,7 @@ impl DB {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test::{bt, TempDir};
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     fn init_log() {
@@ -208,8 +209,11 @@ mod tests {
     #[tokio::test]
     async fn test_new_mem_table() {
         init_log();
+        let test_dir = TempDir::rand_dir();
+        bt::initdb_with_cli(test_dir.dir.as_str());
+
         let mut opt = Options::default();
-        opt.dir = "/tmp/x/badger3".to_string();
+        opt.dir = test_dir.dir.clone();
         let mut db = create_test_db(opt).await;
         db.next_mem_fid = 1;
 
@@ -221,8 +225,11 @@ mod tests {
     #[tokio::test]
     async fn test_open_mem_tables() {
         init_log();
+        let test_dir = TempDir::rand_dir();
+        bt::initdb_with_cli(test_dir.dir.as_str());
+
         let mut opt = Options::default();
-        opt.dir = "/tmp/x/badger3".to_string();
+        opt.dir = test_dir.dir.clone();
         let mut db = create_test_db(opt).await;
 
         db.open_mem_tables().await.unwrap();

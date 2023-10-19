@@ -330,9 +330,8 @@ impl BuildData {
 
 #[cfg(test)]
 mod tests {
-    use std::env::temp_dir;
-
     use rand::RngCore;
+    use std::env::temp_dir;
 
     use crate::{
         table::{Options, Table},

@@ -328,6 +328,8 @@ fn apply_manifest_change(mf: &mut Manifest, change: pb::ManifestChange) -> Resul
 #[cfg(test)]
 mod tests {
 
+    use crate::test::{bt, TempDir};
+
     use super::*;
     #[test]
     fn test_crc32() {
@@ -346,29 +348,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_manifest_file() {
+        let test_dir = TempDir::rand_dir();
+        bt::initdb_with_cli(test_dir.dir.as_str());
+
         let mut opt = Options::default();
-        opt.dir = "/tmp/x/badger3".to_string();
+        opt.dir = test_dir.dir.clone();
         let r = open_or_create_manifest_file(&opt).await;
         println!("{:#?}", r.unwrap())
     }
 
     #[tokio::test]
     async fn test_create_manifest_file() {
-        let dir = "/tmp/badgerx";
-        clean_dir(dir).unwrap();
+        let test_dir = TempDir::rand_dir();
+        std::fs::create_dir_all(test_dir.dir.as_str()).unwrap();
+
         let mut opt = Options::default();
-        opt.dir = dir.to_string();
+        opt.dir = test_dir.dir.clone();
         let r = open_or_create_manifest_file(&opt).await;
         println!("{:#?}", r.unwrap())
-    }
-
-    fn clean_dir<P: AsRef<Path>>(dir: P) -> Result<()> {
-        match std::fs::remove_dir_all(&dir) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => bail!(e),
-            _ => (),
-        };
-        std::fs::create_dir_all(dir)?;
-        Ok(())
     }
 }
