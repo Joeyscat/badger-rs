@@ -1,30 +1,3 @@
-use std::env::temp_dir;
-
-use rand::RngCore;
-
-pub(crate) struct TempDir {
-    pub(crate) dir: String,
-}
-
-impl TempDir {
-    pub(crate) fn rand_dir() -> TempDir {
-        TempDir {
-            dir: temp_dir()
-                .join(format!("badgertest-{}", rand::thread_rng().next_u32()))
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-        }
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        println!("drop {}", self.dir);
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
 pub(crate) mod bt {
 
     pub(crate) fn initdb_with_cli(filepath: &str) {

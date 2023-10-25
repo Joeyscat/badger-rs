@@ -180,7 +180,8 @@ impl DB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test::{bt, TempDir};
+    use crate::test::bt;
+    use temp_dir::TempDir;
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     fn init_log() {
@@ -208,12 +209,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_mem_table() {
-        init_log();
-        let test_dir = TempDir::rand_dir();
-        bt::initdb_with_cli(test_dir.dir.as_str());
+        // init_log();
+        let test_dir = TempDir::new().unwrap();
+        bt::initdb_with_cli(test_dir.path().to_str().unwrap());
 
         let mut opt = Options::default();
-        opt.dir = test_dir.dir.clone();
+        opt.dir = test_dir.path().to_str().unwrap().to_string();
         let mut db = create_test_db(opt).await;
         db.next_mem_fid = 1;
 
@@ -225,11 +226,11 @@ mod tests {
     #[tokio::test]
     async fn test_open_mem_tables() {
         init_log();
-        let test_dir = TempDir::rand_dir();
-        bt::initdb_with_cli(test_dir.dir.as_str());
+        let test_dir = TempDir::new().unwrap();
+        bt::initdb_with_cli(test_dir.path().to_str().unwrap());
 
         let mut opt = Options::default();
-        opt.dir = test_dir.dir.clone();
+        opt.dir = test_dir.path().to_str().unwrap().to_string();
         let mut db = create_test_db(opt).await;
 
         db.open_mem_tables().await.unwrap();

@@ -328,7 +328,9 @@ fn apply_manifest_change(mf: &mut Manifest, change: pb::ManifestChange) -> Resul
 #[cfg(test)]
 mod tests {
 
-    use crate::test::{bt, TempDir};
+    use temp_dir::TempDir;
+
+    use crate::test::bt;
 
     use super::*;
     #[test]
@@ -348,22 +350,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_manifest_file() {
-        let test_dir = TempDir::rand_dir();
-        bt::initdb_with_cli(test_dir.dir.as_str());
+        let test_dir = TempDir::new().unwrap();
+        bt::initdb_with_cli(test_dir.path().to_str().unwrap());
 
         let mut opt = Options::default();
-        opt.dir = test_dir.dir.clone();
+        opt.dir = test_dir.path().to_str().unwrap().to_string();
         let r = open_or_create_manifest_file(&opt).await;
         println!("{:#?}", r.unwrap())
     }
 
     #[tokio::test]
     async fn test_create_manifest_file() {
-        let test_dir = TempDir::rand_dir();
-        std::fs::create_dir_all(test_dir.dir.as_str()).unwrap();
+        let test_dir = TempDir::new().unwrap();
 
         let mut opt = Options::default();
-        opt.dir = test_dir.dir.clone();
+        opt.dir = test_dir.path().to_str().unwrap().to_string();
         let r = open_or_create_manifest_file(&opt).await;
         println!("{:#?}", r.unwrap())
     }

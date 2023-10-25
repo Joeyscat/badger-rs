@@ -243,21 +243,22 @@ mod tests {
     use crate::{
         option,
         table::builder::Builder,
-        test::{bt, TempDir},
+        test::bt,
         util::{file::open_mmap_file, kv::key_with_ts},
         value::ValueStruct,
     };
     use rand::RngCore;
     use std::env::temp_dir;
+    use temp_dir::TempDir;
 
     #[tokio::test]
     async fn test_init_index() {
-        let test_dir = TempDir::rand_dir();
-        bt::write_with_cli(test_dir.dir.as_str());
+        let test_dir = TempDir::new().unwrap();
+        bt::write_with_cli(test_dir.path().to_str().unwrap());
 
         let opt = option::Options::default();
         let (mfile, _) = open_mmap_file(
-            format!("{}/000001.sst", test_dir.dir).as_str(),
+            format!("{}/000001.sst", test_dir.path().to_str().unwrap()).as_str(),
             std::fs::File::options().read(true).write(true),
             0,
         )
