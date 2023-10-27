@@ -404,7 +404,7 @@ mod tests {
         let tab = build_test_table("p", 1000, opts).await;
         assert!(!tab.has_bloom_filter(), "shoud not has bloom filter");
 
-        let iter = tab.new_iterator(0);
+        let iter = tab.new_iterator();
         todo!()
     }
 

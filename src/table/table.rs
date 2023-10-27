@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::rc::Rc;
 
 use anyhow::{anyhow, bail, Result};
 use bytes::BytesMut;
@@ -66,7 +67,7 @@ pub struct Table {
 }
 
 impl Table {
-    pub fn open(mmap_file: MmapFile, opt: Options) -> Result<Self> {
+    pub(crate) fn open(mmap_file: MmapFile, opt: Options) -> Result<Self> {
         let file = mmap_file
             .file
             .lock()
@@ -97,7 +98,7 @@ impl Table {
         Ok(table)
     }
 
-    pub async fn create<P: AsRef<Path>>(filepath: P, builder: Builder) -> Result<Self> {
+    pub(crate) async fn create<P: AsRef<Path>>(filepath: P, builder: Builder) -> Result<Self> {
         let opts = builder.opts;
         let bd = builder.done();
         let mfile = match open_mmap_file(
@@ -132,23 +133,35 @@ impl Table {
         Self::open(mfile, opts)
     }
 
-    pub fn id(&self) -> u64 {
+    pub(crate) fn id(&self) -> u64 {
         self.id
     }
 
-    pub fn smallest(&self) -> &Vec<u8> {
+    pub(crate) fn smallest(&self) -> &Vec<u8> {
         &self.smallest
     }
 
-    pub fn biggest(&self) -> &Vec<u8> {
+    pub(crate) fn biggest(&self) -> &Vec<u8> {
         &self.biggest
     }
 
-    pub fn has_bloom_filter(&self) -> bool {
+    pub(crate) fn has_bloom_filter(&self) -> bool {
         self.has_bloom_filter
     }
 
-    pub fn new_iterator(&self, opt: usize) -> Iterator {
+    pub(crate) fn offsets_len(&self) -> usize {
+        todo!()
+    }
+
+    pub(crate) fn new_iterator(&self) -> Iterator {
+        todo!()
+    }
+
+    pub(crate) fn block(&self, idx: usize) -> Result<Rc<Block>> {
+        if idx >= self.offsets_len() {
+            bail!("block out of index")
+        }
+
         todo!()
     }
 
@@ -165,7 +178,15 @@ impl Table {
 
         self.smallest = block_offset.key().unwrap().bytes().to_vec();
 
-        todo!()
+        let mut it = self.new_iterator();
+
+        if let Some((k, _)) = it.next_back() {
+            self.biggest = k;
+        }
+        bail!(
+            "failed to initialize biggest for table {}",
+            self.mmap_file.filename()?
+        )
     }
 
     fn verify_checksum(&mut self) -> Result<()> {
@@ -235,6 +256,14 @@ impl Table {
             Err(e) => panic!("mfile read error: {}", e),
         }
     }
+}
+
+pub(crate) struct Block {
+    offset: u32,
+    pub(crate) data: Rc<Vec<u8>>,
+    checksum: Vec<u8>,
+    checksum_len: u16,
+    pub(crate) entries_index_start: u32,
 }
 
 #[cfg(test)]
