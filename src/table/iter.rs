@@ -7,11 +7,11 @@ use crate::value::ValueStruct;
 use super::{Block, Table};
 
 struct BlockIterator {
-    block: Rc<Block>,
+    block: Block,
 }
 
 impl BlockIterator {
-    fn set_block(&mut self, block: Rc<Block>) {
+    fn set_block(&mut self, block: Block) {
         self.block = block;
     }
 

@@ -60,3 +60,25 @@ pub mod kv {
         u64::MAX - u64::from_be_bytes(bs)
     }
 }
+
+pub(crate) mod num {
+    pub fn bytes_to_u32(src: &[u8]) -> u32 {
+        let mut buf = [0; 4];
+        buf.copy_from_slice(src);
+        u32::from_be_bytes(buf)
+    }
+
+    pub fn bytes_to_u32_vec(src: &[u8]) -> Vec<u32> {
+        let num_32_bit_words = src.len() / 4;
+        let words = src
+            .chunks(4)
+            .map(|four_bytes| four_bytes.iter().map(|&byte| byte as u32).sum())
+            .collect::<Vec<_>>();
+
+        if src.len() % 4 == 0 {
+            words
+        } else {
+            words.split_at(words.len() - num_32_bit_words).1.to_vec()
+        }
+    }
+}

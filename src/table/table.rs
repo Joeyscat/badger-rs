@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::rc::Rc;
 
 use anyhow::{anyhow, bail, Result};
 use bytes::BytesMut;
@@ -7,6 +6,7 @@ use prost::Message;
 
 use crate::option::{self, ChecksumVerificationMode::*};
 use crate::util::file::open_mmap_file;
+use crate::util::num::{bytes_to_u32, bytes_to_u32_vec};
 use crate::util::{file::MmapFile, table::parse_file_id};
 use crate::{fb, pb, util};
 
@@ -157,25 +157,66 @@ impl Table {
         todo!()
     }
 
-    pub(crate) fn block(&self, idx: usize) -> Result<Rc<Block>> {
+    pub(crate) fn block(&self, idx: usize) -> Result<Block> {
         if idx >= self.offsets_len() {
             bail!("block out of index")
         }
 
-        todo!()
+        let block_offset = self.offsets(idx)?;
+        let data = self
+            .mmap_file
+            .read(block_offset.offset() as usize, block_offset.len() as usize)
+            .map_err(|e| {
+                let filename = self.mmap_file.filename().unwrap();
+                anyhow!(
+                    "failed to read from file, {} at offset {} and len {}: {}",
+                    filename,
+                    block_offset.offset(),
+                    block_offset.len(),
+                    e
+                )
+            })?;
+
+        let mut read_pos = data.len() - 4;
+        let checksum_len = bytes_to_u32(&data[read_pos..read_pos + 4]) as usize;
+
+        if checksum_len > data.len() {
+            bail!("invalid checksum length. Either the data is corrupted or the table options are incorrectly set")
+        }
+
+        read_pos -= checksum_len;
+        let checksum = data[read_pos..read_pos + checksum_len].to_vec();
+
+        read_pos -= 4;
+        let num_entries = bytes_to_u32(&data[read_pos..read_pos + 4]) as usize;
+        let entries_index_start = read_pos - (num_entries * 4);
+        let entries_index_end = read_pos;
+
+        let entry_offsets = bytes_to_u32_vec(&data[entries_index_start..entries_index_end]);
+
+        let data = data[..read_pos + 4].to_vec();
+
+        let block = Block {
+            offset: block_offset.offset(),
+            data,
+            checksum,
+            checksum_len: checksum_len as u16,
+            entries_index_start: entries_index_start as u32,
+            entry_offsets,
+        };
+
+        if self.opt.cv_mode == OnBlockRead || self.opt.cv_mode == OnTableAndBlockRead {
+            block.verify_checksum()?;
+        }
+
+        Ok(block)
     }
 
     fn init_biggest_and_smallest(&mut self) -> Result<()> {
         self.init_index()
             .map_err(|e| anyhow!("failed to read index: {}", e))?;
 
-        let index = self.get_table_index()?;
-
-        let block_offset: fb::BlockOffset<'_> = match index.offsets() {
-            Some(x) => x.get(0),
-            None => panic!("get block offset fail"),
-        };
-
+        let block_offset = self.offsets(0)?;
         self.smallest = block_offset.key().unwrap().bytes().to_vec();
 
         let mut it = self.new_iterator();
@@ -250,6 +291,14 @@ impl Table {
         Ok(flatbuffers::root::<fb::TableIndex>(&self.index_buf)?)
     }
 
+    fn offsets(&self, idx: usize) -> Result<fb::BlockOffset<'_>> {
+        let block_offset: fb::BlockOffset<'_> = match self.get_table_index()?.offsets() {
+            Some(x) => x.get(idx),
+            None => panic!("get block offset fail"),
+        };
+        return Ok(block_offset);
+    }
+
     fn read_or_panic(&self, offset: usize, size: usize) -> Vec<u8> {
         match self.mmap_file.read(offset, size) {
             Ok(d) => d,
@@ -260,10 +309,17 @@ impl Table {
 
 pub(crate) struct Block {
     offset: u32,
-    pub(crate) data: Rc<Vec<u8>>,
+    pub(crate) data: Vec<u8>,
     checksum: Vec<u8>,
     checksum_len: u16,
     pub(crate) entries_index_start: u32,
+    entry_offsets: Vec<u32>,
+}
+
+impl Block {
+    fn verify_checksum(&self) -> Result<()> {
+        todo!()
+    }
 }
 
 #[cfg(test)]
