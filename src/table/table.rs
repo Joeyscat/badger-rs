@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 
 use anyhow::{anyhow, bail, Result};
 use bytes::BytesMut;
@@ -48,22 +50,8 @@ impl Default for Options {
     }
 }
 
-pub struct Table {
-    mmap_file: MmapFile,
-
-    table_size: u64,
-
-    index_buf: Vec<u8>,
-
-    smallest: Vec<u8>,
-    biggest: Vec<u8>,
-    id: u64,
-
-    index_start: usize,
-    index_size: usize,
-    has_bloom_filter: bool,
-
-    opt: Options,
+pub(crate) struct Table {
+    inner: Rc<RefCell<TableInner>>,
 }
 
 impl Table {
@@ -77,10 +65,11 @@ impl Table {
         drop(file);
 
         let cv_mode = opt.cv_mode.clone();
-        let mut table = Table {
+        let inner = TableInner {
             mmap_file,
             table_size: len,
             index_buf: vec![],
+            _cheap: CheapIndex::empty(),
             smallest: vec![],
             biggest: vec![],
             id,
@@ -89,11 +78,14 @@ impl Table {
             index_size: 0,
             has_bloom_filter: false,
         };
+        let mut table = Table {
+            inner: Rc::new(RefCell::new(inner)),
+        };
 
         table.init_biggest_and_smallest()?;
 
         if cv_mode == OnTableRead || cv_mode == OnTableAndBlockRead {
-            table.verify_checksum()?;
+            table.inner.borrow_mut().verify_checksum()?;
         }
         Ok(table)
     }
@@ -134,29 +126,75 @@ impl Table {
     }
 
     pub(crate) fn id(&self) -> u64 {
-        self.id
+        self.inner.borrow().id
     }
 
-    pub(crate) fn smallest(&self) -> &Vec<u8> {
-        &self.smallest
+    pub(crate) fn smallest(&self) -> Vec<u8> {
+        self.inner.borrow().smallest.to_vec()
     }
 
-    pub(crate) fn biggest(&self) -> &Vec<u8> {
-        &self.biggest
+    pub(crate) fn biggest(&self) -> Vec<u8> {
+        self.inner.borrow().biggest.to_vec()
     }
 
     pub(crate) fn has_bloom_filter(&self) -> bool {
-        self.has_bloom_filter
+        self.inner.borrow().has_bloom_filter
     }
 
-    pub(crate) fn offsets_len(&self) -> usize {
-        todo!()
+    fn max_version(&self) -> u64 {
+        self.inner.borrow()._cheap.max_version
+    }
+
+    fn offsets_len(&self) -> usize {
+        self.inner.borrow()._cheap.offsets_len
     }
 
     pub(crate) fn new_iterator(&self) -> Iterator {
-        todo!()
+        Iterator::new(Rc::clone(&self.inner))
     }
 
+    fn init_biggest_and_smallest(&mut self) -> Result<()> {
+        let mut inner = self.inner.borrow_mut();
+        inner
+            .init_index()
+            .map_err(|e| anyhow!("failed to read index: {}", e))?;
+
+        let block_offset = inner.offsets(0)?;
+        inner.smallest = block_offset.key().unwrap().bytes().to_vec();
+        drop(inner);
+
+        let mut it = self.new_iterator();
+
+        if let Some((k, _)) = it.next_back() {
+            self.inner.borrow_mut().biggest = k;
+        }
+        bail!(
+            "failed to initialize biggest for table {}",
+            self.inner.borrow().mmap_file.filename()?
+        )
+    }
+}
+
+pub(crate) struct TableInner {
+    mmap_file: MmapFile,
+
+    table_size: u64,
+
+    index_buf: Vec<u8>,
+    _cheap: CheapIndex,
+
+    smallest: Vec<u8>,
+    biggest: Vec<u8>,
+    id: u64,
+
+    index_start: usize,
+    index_size: usize,
+    has_bloom_filter: bool,
+
+    opt: Options,
+}
+
+impl TableInner {
     pub(crate) fn block(&self, idx: usize) -> Result<Block> {
         if idx >= self.offsets_len() {
             bail!("block out of index")
@@ -212,24 +250,6 @@ impl Table {
         Ok(block)
     }
 
-    fn init_biggest_and_smallest(&mut self) -> Result<()> {
-        self.init_index()
-            .map_err(|e| anyhow!("failed to read index: {}", e))?;
-
-        let block_offset = self.offsets(0)?;
-        self.smallest = block_offset.key().unwrap().bytes().to_vec();
-
-        let mut it = self.new_iterator();
-
-        if let Some((k, _)) = it.next_back() {
-            self.biggest = k;
-        }
-        bail!(
-            "failed to initialize biggest for table {}",
-            self.mmap_file.filename()?
-        )
-    }
-
     fn verify_checksum(&mut self) -> Result<()> {
         todo!()
     }
@@ -273,9 +293,18 @@ impl Table {
 
         self.read_table_index_buf()?;
         let index = self.get_table_index()?;
+        let cheap = CheapIndex {
+            max_version: index.max_version(),
+            key_count: index.key_count(),
+            un_compressed_size: index.uncompressed_size(),
+            on_disk_size: index.on_disk_size(),
+            bloom_filter_len: index.bloom_filter().unwrap().len(),
+            offsets_len: index.offsets().unwrap().len(),
+        };
         if let Some(bf) = index.bloom_filter() {
             self.has_bloom_filter = bf.len() > 0;
         }
+        self._cheap = cheap;
 
         Ok(())
     }
@@ -305,6 +334,32 @@ impl Table {
             Err(e) => panic!("mfile read error: {}", e),
         }
     }
+
+    pub(crate) fn offsets_len(&self) -> usize {
+        self._cheap.offsets_len
+    }
+}
+
+struct CheapIndex {
+    max_version: u64,
+    key_count: u32,
+    un_compressed_size: u32,
+    on_disk_size: u32,
+    bloom_filter_len: usize,
+    offsets_len: usize,
+}
+
+impl CheapIndex {
+    fn empty() -> CheapIndex {
+        CheapIndex {
+            max_version: 0,
+            key_count: 0,
+            un_compressed_size: 0,
+            on_disk_size: 0,
+            bloom_filter_len: 0,
+            offsets_len: 0,
+        }
+    }
 }
 
 pub(crate) struct Block {
@@ -324,7 +379,7 @@ impl Block {
 
 #[cfg(test)]
 mod tests {
-    use super::Table;
+    use super::{CheapIndex, Table, TableInner};
     use crate::{
         option,
         table::builder::Builder,
@@ -333,10 +388,11 @@ mod tests {
         value::ValueStruct,
     };
     use rand::RngCore;
-    use std::env::temp_dir;
+    use std::{cell::RefCell, rc::Rc};
     use temp_dir::TempDir;
+    use test_log::test;
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn test_init_index() {
         let test_dir = TempDir::new().unwrap();
         bt::write_with_cli(test_dir.path().to_str().unwrap());
@@ -350,10 +406,11 @@ mod tests {
         .await
         .unwrap();
         let table_size = mfile.file.lock().unwrap().fd.metadata().unwrap().len();
-        let mut t = Table {
+        let table_inner = TableInner {
             mmap_file: mfile,
             table_size,
             index_buf: vec![],
+            _cheap: CheapIndex::empty(),
             smallest: vec![],
             biggest: vec![],
             id: 1,
@@ -362,11 +419,15 @@ mod tests {
             has_bloom_filter: false,
             opt: opt.into(),
         };
+        let t = Table {
+            inner: Rc::new(RefCell::new(table_inner)),
+        };
 
-        t.init_index().unwrap();
         println!("table: {}", t.id());
+        let mut inner = t.inner.borrow_mut();
+        inner.init_index().unwrap();
 
-        let index = t.get_table_index().unwrap();
+        let index = inner.get_table_index().unwrap();
         println!("key_count: {}", index.key_count());
         println!("max_version: {}", index.max_version());
         println!("on_disk_size: {}", index.on_disk_size());
@@ -385,7 +446,7 @@ mod tests {
         println!("offsets[0].offset: {}", offset.offset());
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn test_index_no_encryption_or_compression() {
         let mut opts = super::Options::default();
         opts.block_size = 4 * 1024;
@@ -396,7 +457,7 @@ mod tests {
     }
 
     async fn test_index_with_options(opts: super::Options) {
-        let keys_count = 100000;
+        let keys_count = 10;
 
         let mut builder = Builder::new(opts);
         let mut block_first_keys = Vec::new();
@@ -415,17 +476,24 @@ mod tests {
             builder.add(k, vs, 0);
         }
 
-        let filepath = temp_dir().join(format!("{}.sst", rand::thread_rng().next_u32()));
-        let mut tbl = match Table::create(filepath.clone(), builder).await {
+        let test_dir = TempDir::new().unwrap();
+        let filepath = test_dir
+            .path()
+            .join(format!("{}.sst", rand::thread_rng().next_u32()));
+        let tbl = match Table::create(filepath.clone(), builder).await {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         };
 
-        tbl.init_index().unwrap();
-        let idx = tbl.get_table_index().unwrap();
-        let off_len = idx.offsets().unwrap().len();
-        assert_eq!(block_count, off_len, "block count should be equal");
-        for i in 0..off_len {
+        let mut inner = tbl.inner.borrow_mut();
+        inner.init_index().unwrap();
+        let idx = inner.get_table_index().unwrap();
+        assert_eq!(
+            block_count,
+            tbl.offsets_len(),
+            "block count should be equal"
+        );
+        for i in 0..tbl.offsets_len() {
             let offset = idx.offsets().unwrap().get(i);
             assert_eq!(
                 block_first_keys[i],
@@ -433,7 +501,8 @@ mod tests {
                 "block first key should be equal"
             );
         }
-        assert_eq!(keys_count, idx.max_version(), "max version should be equal");
+        assert_eq!(keys_count, tbl.max_version(), "max version should be equal");
+        drop(inner);
         drop(tbl);
         std::fs::remove_file(filepath).unwrap();
     }

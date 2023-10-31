@@ -20,7 +20,7 @@ impl LevelHandler {
         }
     }
 
-    pub fn init_table(&mut self, tables: Vec<Table>) {
+    pub(crate) fn init_table(&mut self, tables: Vec<Table>) {
         let mut tables = tables;
         if self.level == 0 {
             // Key range will overlap. Just sort by file_id in ascending order
@@ -28,7 +28,7 @@ impl LevelHandler {
             tables.sort_by(|a, b| a.id().cmp(&b.id()))
         } else {
             // Sort tables by keys.
-            tables.sort_by(|a, b| a.smallest().cmp(b.smallest()))
+            tables.sort_by(|a, b| a.smallest().cmp(&b.smallest()))
         }
         self.tables = Mutex::new(tables);
     }
@@ -42,7 +42,7 @@ impl LevelHandler {
         for index in 1..tables.len() {
             let a = tables.get(index - 1).unwrap();
             let b = tables.get(index).unwrap();
-            if a.biggest().cmp(b.smallest()).is_ge() {
+            if a.biggest().cmp(&b.smallest()).is_ge() {
                 bail!(
                     "biggest({}) >= smallest({}), level={}, tables.len={}",
                     index - 1,
@@ -51,7 +51,7 @@ impl LevelHandler {
                     tables.len()
                 )
             }
-            if b.smallest().cmp(b.biggest()).is_gt() {
+            if b.smallest().cmp(&b.biggest()).is_gt() {
                 bail!(
                     "smallest({}) > biggest({}), level={}, tables.len={}",
                     index,

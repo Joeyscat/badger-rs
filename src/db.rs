@@ -182,6 +182,7 @@ mod tests {
     use super::*;
     use crate::test::bt;
     use temp_dir::TempDir;
+    use test_log::test;
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     fn init_log() {
@@ -207,9 +208,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn test_new_mem_table() {
-        // init_log();
         let test_dir = TempDir::new().unwrap();
         bt::initdb_with_cli(test_dir.path().to_str().unwrap());
 
@@ -223,9 +223,8 @@ mod tests {
         println!("{}", mt);
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn test_open_mem_tables() {
-        init_log();
         let test_dir = TempDir::new().unwrap();
         bt::initdb_with_cli(test_dir.path().to_str().unwrap());
 

@@ -1,6 +1,5 @@
 use std::ops::{Div, Mul};
 
-use integer_encoding::VarInt;
 use prost::Message;
 
 use crate::{
@@ -199,14 +198,14 @@ impl Builder {
             .entry_offsets
             .clone()
             .iter()
-            .for_each(|off| self.append(off.encode_to_vec()));
+            .for_each(|off| self.append(off.to_be_bytes().into()));
 
-        self.append(entry_offsets_len.encode_var_vec());
+        self.append(entry_offsets_len.to_be_bytes().into());
 
         let checksum = self.calculate_checksum(&self.cur_block.data);
         let checksum_len = checksum.len() as u32;
         self.append(checksum);
-        self.append(checksum_len.encode_var_vec());
+        self.append(checksum_len.to_be_bytes().into());
 
         self.block_list.push(self.cur_block.clone());
 

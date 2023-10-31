@@ -20,9 +20,24 @@ prost = "0.12.1"
 rand = "0.8.5"
 temp-dir = "0.1.11"
 thiserror = "1.0.48"
-tokio = { version = "1.32.0", features = ["sync", "fs", "io-util", "macros", "rt-multi-thread"] }
+tokio = { version = "1.32.0", features = [
+    "sync",
+    "fs",
+    "io-util",
+    "macros",
+    "rt-multi-thread",
+] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+
+[dev-dependencies]
+env_logger = "0.10.0"
+test-log = "0.2.13"
+tracing-subscriber = { version = "0.3.17", default-features = false, features = [
+    "env-filter",
+    "fmt",
+] }
+
 
 [build-dependencies]
 prost-build = "0.12.1"

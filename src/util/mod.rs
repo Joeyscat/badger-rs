@@ -47,7 +47,7 @@ pub mod kv {
     }
 
     pub fn key_with_ts(mut key: Vec<u8>, ts: u64) -> Vec<u8> {
-        key.extend_from_slice(&ts.to_be_bytes());
+        key.extend_from_slice(&(u64::MAX - ts).to_be_bytes());
         key
     }
 
