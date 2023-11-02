@@ -1,47 +1,75 @@
 use std::{cell::RefCell, rc::Rc};
 
+use anyhow::{anyhow, bail, Result};
 use log::{error, warn};
 
-use crate::value::ValueStruct;
+use crate::{util::iter::Iterator as Iter, value::ValueStruct};
 
 use super::{Block, TableInner};
 
+#[derive(Default)]
 struct BlockIterator {
+    data: Vec<u8>,
+    idx: usize,
+    idx_back: usize,
+    base_key: Vec<u8>,
+    key: Vec<u8>,
+    entry_offsets: Vec<u32>,
     block: Option<Block>,
+    prev_overlap: u16,
 }
 
 impl BlockIterator {
-    fn empty() -> BlockIterator {
-        BlockIterator { block: None }
-    }
-
     fn new(block: Block) -> BlockIterator {
-        BlockIterator { block: Some(block) }
-    }
-
-    fn data(&self) -> &[u8] {
-        todo!()
-    }
-
-    fn clean_data(&mut self) {
-        todo!()
+        let mut bi = BlockIterator::default();
+        bi.block = Some(block);
+        // TODO init
+        bi
     }
 
     fn is_empty(&self) -> bool {
         self.block.is_none()
     }
-}
 
-impl std::iter::Iterator for BlockIterator {
-    type Item = (Vec<u8>, ValueStruct);
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn set_idx(&mut self, idx: usize) -> Result<()> {
         todo!()
     }
 }
 
-impl std::iter::DoubleEndedIterator for BlockIterator {
-    fn next_back(&mut self) -> Option<Self::Item> {
+impl Iter for BlockIterator {
+    fn seek(&mut self, key: &[u8]) -> Result<bool> {
+        todo!()
+    }
+
+    fn seek_for_prev(&mut self, key: &[u8]) -> Result<bool> {
+        todo!()
+    }
+
+    fn seek_to_first(&mut self) -> Result<bool> {
+        todo!()
+    }
+
+    fn seek_to_last(&mut self) -> Result<bool> {
+        todo!()
+    }
+
+    fn prev(&mut self) -> Result<bool> {
+        todo!()
+    }
+
+    fn next(&mut self) -> Result<bool> {
+        todo!()
+    }
+
+    fn key(&self) -> &[u8] {
+        todo!()
+    }
+
+    fn value(&self) -> &[u8] {
+        todo!()
+    }
+
+    fn valid(&self) -> Result<bool> {
         todo!()
     }
 }
@@ -49,33 +77,119 @@ impl std::iter::DoubleEndedIterator for BlockIterator {
 pub struct Iterator {
     table: Rc<RefCell<TableInner>>,
     bpos: usize,
-    bpos_back: usize,
     bi: BlockIterator,
-    bi_back: BlockIterator,
 }
 
 impl Iterator {
     pub(crate) fn new(table: Rc<RefCell<TableInner>>) -> Iterator {
-        let mut bpos_back = table.borrow().offsets_len();
-        if bpos_back != 0 {
-            bpos_back -= 1;
-        }
         Iterator {
             table,
             bpos: 0,
-            bpos_back,
-            bi: BlockIterator::empty(),
-            bi_back: BlockIterator::empty(),
+            bi: BlockIterator::default(),
         }
+    }
+
+    fn seek_from(&mut self, key: &[u8]) -> Result<bool> {
+        self.bpos = 0;
+
+        let t = self.table.borrow();
+        let idx = match (0..t.offsets_len())
+            .collect::<Vec<usize>>()
+            .binary_search_by(|idx| {
+                t.offsets(*idx)
+                    .expect(format!("no block offset found for index: {}", idx).as_str())
+                    .key()
+                    .unwrap()
+                    .bytes()
+                    .cmp(key)
+            }) {
+            Ok(idx) => idx,
+            Err(idx) => idx - 1,
+        };
+        drop(t);
+        if idx == 0 {
+            return self.seek_helper(0, key);
+        }
+
+        if !self.seek_helper(idx, key)? {
+            if idx + 1 >= self.table.borrow().offsets_len() {
+                return Ok(false);
+            }
+            return self.seek_helper(idx + 1, key);
+        }
+
+        Ok(true)
+    }
+
+    fn seek_helper(&mut self, block_idx: usize, key: &[u8]) -> Result<bool> {
+        todo!()
     }
 }
 
-impl std::iter::Iterator for Iterator {
-    type Item = (Vec<u8>, ValueStruct);
+impl Iter for Iterator {
+    fn seek(&mut self, key: &[u8]) -> Result<bool> {
+        self.seek_from(key)
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn seek_for_prev(&mut self, key: &[u8]) -> Result<bool> {
+        if !self.seek_from(key)? {
+            return Ok(false);
+        }
+        if self.key() != key {
+            return self.prev();
+        }
+        Ok(true)
+    }
+
+    fn seek_to_first(&mut self) -> Result<bool> {
+        if self.table.borrow().offsets_len() == 0 {
+            return Ok(false);
+        }
+        self.bpos = 0;
+        let block = self.table.borrow().block(self.bpos)?;
+        self.bi = BlockIterator::new(block);
+        self.bi.seek_to_first()
+    }
+
+    fn seek_to_last(&mut self) -> Result<bool> {
+        let num_blocks = self.table.borrow().offsets_len();
+        if num_blocks == 0 {
+            return Ok(false);
+        }
+        self.bpos = num_blocks - 1;
+        let block = self.table.borrow().block(self.bpos)?;
+        self.bi = BlockIterator::new(block);
+        self.bi.seek_to_last()
+    }
+
+    fn prev(&mut self) -> Result<bool> {
+        if self.bi.is_empty() {
+            let block = match self.table.borrow().block(self.bpos) {
+                Ok(b) => b,
+                Err(e) => {
+                    error!("read block from table error: {}", e);
+                    return Ok(false);
+                }
+            };
+            self.bi = BlockIterator::new(block);
+            return self.bi.seek_to_last();
+        }
+
+        if self.bi.prev()? {
+            return Ok(true);
+        }
+
+        if self.bpos == 0 {
+            return Ok(false);
+        }
+        self.bpos -= 1;
+        self.bi = BlockIterator::default();
+        self.prev()
+    }
+
+    fn next(&mut self) -> Result<bool> {
         if self.bpos >= self.table.borrow().offsets_len() {
-            return None;
+            return Ok(false);
         }
 
         if self.bi.is_empty() {
@@ -83,48 +197,31 @@ impl std::iter::Iterator for Iterator {
                 Ok(b) => b,
                 Err(e) => {
                     warn!("read block from table error: {}", e);
-                    return None;
+                    return Ok(false);
                 }
             };
             self.bi = BlockIterator::new(block);
-            return self.bi.next();
+            return self.bi.seek_to_first();
         }
 
-        let r = self.bi.next();
-        if r.is_some() {
-            return r;
+        if self.bi.next()? {
+            return Ok(true);
         }
 
         self.bpos += 1;
-        self.bi = BlockIterator::empty();
+        self.bi = BlockIterator::default();
         self.next()
     }
-}
 
-impl std::iter::DoubleEndedIterator for Iterator {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.bi_back.is_empty() {
-            let block = match self.table.borrow().block(self.bpos_back) {
-                Ok(b) => b,
-                Err(e) => {
-                    error!("read block from table error: {}", e);
-                    return None;
-                }
-            };
-            self.bi_back = BlockIterator::new(block);
-            return self.bi_back.next_back();
-        }
+    fn key(&self) -> &[u8] {
+        self.bi.key()
+    }
 
-        let r = self.bi_back.next_back();
-        if r.is_some() {
-            return r;
-        }
+    fn value(&self) -> &[u8] {
+        self.bi.value()
+    }
 
-        if self.bpos_back == 0 {
-            return None;
-        }
-        self.bpos_back -= 1;
-        self.bi_back = BlockIterator::empty();
-        self.next_back()
+    fn valid(&self) -> Result<bool> {
+        Ok(self.bpos < self.table.borrow().offsets_len() && self.bi.valid()?)
     }
 }

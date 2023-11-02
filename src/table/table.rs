@@ -8,6 +8,7 @@ use prost::Message;
 
 use crate::option::{self, ChecksumVerificationMode::*};
 use crate::util::file::open_mmap_file;
+use crate::util::iter::Iterator as _;
 use crate::util::num::{bytes_to_u32, bytes_to_u32_vec};
 use crate::util::{file::MmapFile, table::parse_file_id};
 use crate::{fb, pb, util};
@@ -165,8 +166,8 @@ impl Table {
 
         let mut it = self.new_iterator();
 
-        if let Some((k, _)) = it.next_back() {
-            self.inner.borrow_mut().biggest = k;
+        if it.seek_to_last()? {
+            self.inner.borrow_mut().biggest = it.key().to_vec();
         }
         bail!(
             "failed to initialize biggest for table {}",
@@ -320,7 +321,7 @@ impl TableInner {
         Ok(flatbuffers::root::<fb::TableIndex>(&self.index_buf)?)
     }
 
-    fn offsets(&self, idx: usize) -> Result<fb::BlockOffset<'_>> {
+    pub(crate) fn offsets(&self, idx: usize) -> Result<fb::BlockOffset<'_>> {
         let block_offset: fb::BlockOffset<'_> = match self.get_table_index()?.offsets() {
             Some(x) => x.get(idx),
             None => panic!("get block offset fail"),

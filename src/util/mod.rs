@@ -1,6 +1,7 @@
-pub mod bloom;
-pub mod file;
-pub mod table;
+pub(crate) mod bloom;
+pub(crate) mod file;
+pub(crate) mod table;
+pub(crate) mod iter;
 
 use std::{collections::HashMap, fs, path::Path};
 
