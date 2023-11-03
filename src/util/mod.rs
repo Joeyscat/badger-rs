@@ -1,7 +1,7 @@
 pub(crate) mod bloom;
 pub(crate) mod file;
-pub(crate) mod table;
 pub(crate) mod iter;
+pub(crate) mod table;
 
 use std::{collections::HashMap, fs, path::Path};
 
@@ -70,16 +70,12 @@ pub(crate) mod num {
     }
 
     pub fn bytes_to_u32_vec(src: &[u8]) -> Vec<u32> {
-        let num_32_bit_words = src.len() / 4;
+        assert!(src.len() % 4 == 0, "src length must be a multiple of 4");
         let words = src
             .chunks(4)
-            .map(|four_bytes| four_bytes.iter().map(|&byte| byte as u32).sum())
+            .map(|four_bytes| u32::from_be_bytes(four_bytes.try_into().unwrap()))
             .collect::<Vec<_>>();
 
-        if src.len() % 4 == 0 {
-            words
-        } else {
-            words.split_at(words.len() - num_32_bit_words).1.to_vec()
-        }
+        words
     }
 }

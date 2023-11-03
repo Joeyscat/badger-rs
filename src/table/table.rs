@@ -168,6 +168,7 @@ impl Table {
 
         if it.seek_to_last()? {
             self.inner.borrow_mut().biggest = it.key().to_vec();
+            return Ok(());
         }
         bail!(
             "failed to initialize biggest for table {}",
@@ -363,13 +364,14 @@ impl CheapIndex {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct Block {
     offset: u32,
     pub(crate) data: Vec<u8>,
     checksum: Vec<u8>,
     checksum_len: u16,
     pub(crate) entries_index_start: u32,
-    entry_offsets: Vec<u32>,
+    pub(crate) entry_offsets: Vec<u32>,
 }
 
 impl Block {
@@ -458,13 +460,13 @@ mod tests {
     }
 
     async fn test_index_with_options(opts: super::Options) {
-        let keys_count = 10;
+        let keys_count = 10000;
 
         let mut builder = Builder::new(opts);
         let mut block_first_keys = Vec::new();
         let mut block_count = 0;
         for i in 0..keys_count {
-            let k = key_with_ts(format!("{:016x}", i).into(), i);
+            let k = key_with_ts(format!("{:016x}", i).into(), i + 1);
             let vs = ValueStruct::new(format!("{}", i).into_bytes().into());
 
             if i == 0 {
@@ -486,15 +488,13 @@ mod tests {
             Err(e) => panic!("{}", e),
         };
 
+        let offsets_len = tbl.offsets_len();
+        let max_version = tbl.max_version();
         let mut inner = tbl.inner.borrow_mut();
         inner.init_index().unwrap();
         let idx = inner.get_table_index().unwrap();
-        assert_eq!(
-            block_count,
-            tbl.offsets_len(),
-            "block count should be equal"
-        );
-        for i in 0..tbl.offsets_len() {
+        assert_eq!(block_count, offsets_len, "block count should be equal");
+        for i in 0..offsets_len {
             let offset = idx.offsets().unwrap().get(i);
             assert_eq!(
                 block_first_keys[i],
@@ -502,7 +502,7 @@ mod tests {
                 "block first key should be equal"
             );
         }
-        assert_eq!(keys_count, tbl.max_version(), "max version should be equal");
+        assert_eq!(keys_count, max_version, "max version should be equal");
         drop(inner);
         drop(tbl);
         std::fs::remove_file(filepath).unwrap();

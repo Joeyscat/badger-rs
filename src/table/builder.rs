@@ -17,7 +17,39 @@ use super::Options;
 
 const PADDING: u32 = 256;
 
-pub struct Builder {
+pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<Header>();
+
+#[repr(C)]
+pub(crate) struct Header {
+    pub overlap: u16,
+    pub diff: u16,
+}
+
+impl Header {
+    pub fn encode(&self) -> Vec<u8> {
+        unsafe {
+            let header_slice: &[u8] =
+                std::slice::from_raw_parts((self as *const Header) as *const u8, HEADER_SIZE);
+            header_slice.to_vec()
+        }
+    }
+
+    pub fn decode(data: &[u8]) -> Header {
+        assert_eq!(HEADER_SIZE, data.len());
+        let h: Header = Header {
+            overlap: 0,
+            diff: 0,
+        };
+        unsafe {
+            let header_slice: &mut [u8] =
+                std::slice::from_raw_parts_mut((&h as *const Header) as *mut u8, HEADER_SIZE);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), header_slice.as_mut_ptr(), HEADER_SIZE);
+        }
+        h
+    }
+}
+
+pub(crate) struct Builder {
     cur_block: Bblock,
     block_list: Vec<Bblock>,
 
@@ -125,11 +157,12 @@ impl Builder {
         // store current entry's offset
         self.cur_block.entry_offsets.push(self.cur_block.end as u32);
 
-        let overlap = (key_len - diff_key.len()) as u16;
-        let diff = diff_key.len() as u16;
+        let header = Header {
+            overlap: (key_len - diff_key.len()) as u16,
+            diff: diff_key.len() as u16,
+        };
         // layout header(overlap,diff), diff_key, value
-        self.append(overlap.to_be_bytes().to_vec());
-        self.append(diff.to_be_bytes().to_vec());
+        self.append(header.encode());
         self.append(diff_key);
         self.append(value.encode_to_vec());
 
@@ -193,13 +226,14 @@ impl Builder {
         }
 
         let entry_offsets_len = self.cur_block.entry_offsets.len() as u32;
-
+        let mut offset_bytes = Vec::with_capacity(entry_offsets_len as usize * 4);
         self.cur_block
             .entry_offsets
             .clone()
             .iter()
-            .for_each(|off| self.append(off.to_be_bytes().into()));
+            .for_each(|off| offset_bytes.append(&mut off.to_be_bytes().into())); // TODO optimize
 
+        self.append(offset_bytes);
         self.append(entry_offsets_len.to_be_bytes().into());
 
         let checksum = self.calculate_checksum(&self.cur_block.data);
@@ -338,7 +372,7 @@ mod tests {
         value::ValueStruct,
     };
 
-    use super::Builder;
+    use super::{Builder, Header};
 
     fn build_test_builder(key_counts: u32, opts: Options) -> Builder {
         let mut builder = Builder::new(opts);
@@ -420,5 +454,18 @@ mod tests {
         let mut buf = vec![0; bd.size as usize];
         let written = bd.dump(&mut buf);
         assert_eq!(written, bd.size);
+    }
+
+    #[test]
+    fn test_header_encode() {
+        let h = Header {
+            overlap: 12,
+            diff: 13,
+        };
+        let x = h.encode();
+        println!("{:?}", x);
+        let h2 = Header::decode(&x);
+        assert_eq!(h.overlap, h2.overlap);
+        assert_eq!(h.diff, h2.diff);
     }
 }
