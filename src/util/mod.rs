@@ -39,7 +39,7 @@ pub fn calculate_checksum(data: &[u8], ca: pb::checksum::Algorithm) -> u64 {
 }
 
 pub mod kv {
-    pub fn parse_key(key: &Vec<u8>) -> Vec<u8> {
+    pub fn parse_key(key: &[u8]) -> Vec<u8> {
         if key.len() == 0 {
             return vec![];
         }

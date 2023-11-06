@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use prost::Message;
 
 use crate::option::{self, ChecksumVerificationMode::*};
+use crate::util::bloom;
 use crate::util::file::open_mmap_file;
 use crate::util::iter::Iterator as _;
 use crate::util::num::{bytes_to_u32, bytes_to_u32_vec};
@@ -140,6 +141,22 @@ impl Table {
 
     pub(crate) fn has_bloom_filter(&self) -> bool {
         self.inner.borrow().has_bloom_filter
+    }
+
+    pub(crate) fn does_not_have(&self, hash: u32) -> Result<bool> {
+        if !self.inner.borrow().has_bloom_filter {
+            return Ok(false);
+        }
+
+        Ok(!bloom::Filter::may_contain(
+            self.inner
+                .borrow()
+                .get_table_index()?
+                .bloom_filter()
+                .ok_or(anyhow!("Get bloom filter bytes error"))?
+                .bytes(),
+            hash,
+        ))
     }
 
     fn max_version(&self) -> u64 {

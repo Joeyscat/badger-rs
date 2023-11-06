@@ -263,11 +263,6 @@ impl Builder {
 
     fn build_index(&mut self, bloom: &[u8]) -> (Vec<u8>, u32) {
         let mut builder = flatbuffers::FlatBufferBuilder::new();
-        let bg_off = if bloom.len() != 0 {
-            builder.create_vector(&bloom)
-        } else {
-            flatbuffers::WIPOffset::new(0)
-        };
 
         let (bo_list, data_size) =
             self.block_list
@@ -284,7 +279,7 @@ impl Builder {
         self.on_disk_size += data_size;
         let x = fb::TableIndexT {
             offsets: Some(bo_list),
-            bloom_filter: Some(bg_off.encode_to_vec()),
+            bloom_filter: Some(bloom.to_vec()),
             max_version: self.max_version,
             key_count: self.key_hashes.len() as u32,
             uncompressed_size: 0,
@@ -363,12 +358,20 @@ impl BuildData {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use anyhow::Result;
     use rand::RngCore;
-    use std::env::temp_dir;
+    use temp_dir::TempDir;
+    use test_log::test;
 
     use crate::{
         table::{Options, Table},
-        util::kv::key_with_ts,
+        util::{
+            bloom,
+            iter::Iterator,
+            kv::{key_with_ts, parse_key},
+        },
         value::ValueStruct,
     };
 
@@ -386,7 +389,7 @@ mod tests {
         builder
     }
 
-    async fn build_test_table(prefix: &str, n: u32, opts: Options) -> Table {
+    async fn build_test_table(prefix: &str, n: u32, opts: Options) -> Result<Table> {
         let opts = if opts.block_size == 0 {
             let mut temp = opts.clone();
             temp.block_size = 4 * 1024;
@@ -404,16 +407,29 @@ mod tests {
         return build_table(kvs, opts).await;
     }
 
-    async fn build_table(mut kvs: Vec<(String, String)>, opts: Options) -> Table {
+    async fn build_table(mut kvs: Vec<(String, String)>, opts: Options) -> Result<Table> {
         kvs.sort_by_key(|e| e.0.as_ptr());
 
-        let builder = Builder::new(opts);
-        let filepath = temp_dir().join(format!("{}.sst", rand::thread_rng().next_u32()));
+        let mut builder = Builder::new(opts);
+        for (k, v) in kvs {
+            builder.add(
+                key_with_ts(k.into(), 0),
+                ValueStruct {
+                    meta: b'A',
+                    user_meta: 0,
+                    expires_at: 0,
+                    value: Arc::new(v.into()),
+                    version: 0,
+                },
+                0,
+            );
+        }
+        let test_dir = TempDir::new()?;
+        let filepath = test_dir
+            .path()
+            .join(format!("{}.sst", rand::thread_rng().next_u32()));
 
-        let table = Table::create(filepath, builder).await;
-        assert!(table.is_ok());
-
-        return table.unwrap();
+        Table::create(filepath, builder).await
     }
 
     fn key(prefix: &str, i: u32) -> String {
@@ -429,21 +445,51 @@ mod tests {
         assert_eq!(empty_bytes, builder.finish(), "the builder should be empty");
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn test_without_bloom_filter() {
-        let mut opts = Options::default();
-        opts.bloom_false_positive = 0.0;
-        let builder = Builder::new(opts);
-        let tab = build_test_table("p", 1000, opts).await;
-        assert!(!tab.has_bloom_filter(), "shoud not has bloom filter");
-
-        let iter = tab.new_iterator();
-        todo!()
+        test_if_bloom_filter(false).await.unwrap();
     }
 
-    #[test]
-    fn test_with_bloom_filter() {
-        todo!()
+    #[test(tokio::test)]
+    async fn test_with_bloom_filter() {
+        test_if_bloom_filter(true).await.unwrap();
+    }
+
+    async fn test_if_bloom_filter(with_bloom: bool) -> Result<()> {
+        let key_count = 1000;
+        let mut opts = Options::default();
+        opts.bloom_false_positive = 0.0;
+        if with_bloom {
+            opts.bloom_false_positive = 0.01;
+        }
+        let tab = build_test_table("p", key_count, opts).await?;
+        assert_eq!(with_bloom, tab.has_bloom_filter(), "bloom filter");
+
+        let mut iter = tab.new_iterator();
+        assert!(iter.seek_to_first()?);
+        let mut c = 0;
+        while iter.valid()? {
+            c += 1;
+            let hash = bloom::hash(parse_key(iter.key()));
+            assert!(!tab.does_not_have(hash)?);
+            iter.next()?;
+        }
+        assert_eq!(key_count, c);
+
+        let mut iter = tab.new_iterator();
+        assert!(iter.seek_to_last()?);
+        let mut c = 0;
+        while iter.valid()? {
+            c += 1;
+            let hash = bloom::hash(parse_key(iter.key()));
+            assert!(!tab.does_not_have(hash)?);
+            iter.prev()?;
+        }
+        assert_eq!(key_count, c);
+
+        let hash = bloom::hash(Vec::from("foo"));
+        assert_eq!(with_bloom, tab.does_not_have(hash)?);
+        Ok(())
     }
 
     #[test]

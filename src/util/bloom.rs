@@ -1,4 +1,4 @@
-pub struct Filter(Vec<u8>);
+pub(crate) struct Filter(Vec<u8>);
 
 impl Filter {
     pub fn empty() -> Filter {
@@ -22,12 +22,20 @@ impl Filter {
             k = 30;
         }
 
-        let n_bits = keys.len() * bits_per_key as usize;
+        let mut n_bits = keys.len() * bits_per_key as usize;
         // For small len(keys), we can see a very high false positive rate. Fix it
         // by enforcing a minimum bloom filter length.
+        if n_bits < 64 {
+            n_bits = 64;
+        }
         let n_bytes = (n_bits + 7) / 8;
         let n_bits = n_bytes * 8;
-        let (mut buf, mut filter) = Self::extend(buf, n_bytes + 1);
+
+        let mut c = 1024;
+        while c < n_bytes + 1 {
+            c += c / 4;
+        }
+        let mut filter = vec![0; c];
 
         for mut h in keys.clone() {
             let delta = h >> 17 | h << 15;
@@ -38,34 +46,35 @@ impl Filter {
             }
         }
         filter[n_bytes] = k as u8;
-
-        buf.extend_from_slice(&filter);
-        buf
-    }
-
-    /// extend appends n zero bytes to b. It returns the overall slice (of length
-    /// n+len(originalB)) and the slice of n trailing zeroes.
-    fn extend(mut b: Vec<u8>, n: usize) -> (Vec<u8>, Vec<u8>) {
-        let want = n + b.len();
-        if want <= b.capacity() {
-            b.resize(want, 0);
-            let trailer = b[b.len()..].to_vec();
-            (b, trailer)
-        } else {
-            // Grow the capacity exponentially, with a 1KiB minimum.
-            let mut c = 1024;
-            while c < want {
-                c += c / 4;
-            }
-            let mut overall = Vec::with_capacity(c);
-            overall.resize(want, 0);
-            let trailer = overall[b.len()..].to_vec();
-            (overall, trailer)
-        }
+        filter.resize(n_bytes + 1, 0);
+        filter
     }
 
     pub fn bloom(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl Filter {
+    pub(crate) fn may_contain(bf: &[u8], h: u32) -> bool {
+        if bf.len() < 2 {
+            return false;
+        }
+        let k = bf.last().unwrap().clone();
+        if k > 30 {
+            return true;
+        }
+        let n_bits = (8 * (bf.len() - 1)) as u32;
+        let delta = h >> 17 | h << 15;
+        let mut h = h;
+        for _ in 0..k {
+            let bit_pos = h % n_bits;
+            if bf[(bit_pos / 8) as usize] & (1 << (bit_pos % 8)) == 0 {
+                return false;
+            }
+            (h, _) = h.overflowing_add(delta);
+        }
+        return true;
     }
 }
 
