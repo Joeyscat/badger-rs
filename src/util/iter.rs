@@ -15,7 +15,7 @@ use anyhow::Result;
 /// Iterators may become invalid after a failed `seek`,
 /// or after iteration has ended after calling `next` or `prev`,
 /// and they return `false`.
-pub trait Iterator {
+pub trait IteratorI {
     /// Move the iterator to a specific key.
     ///
     /// When an exact match is not found, `seek` sets the iterator to the next

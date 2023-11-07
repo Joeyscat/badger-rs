@@ -1,5 +1,6 @@
 use std::{fmt::Display, sync::Arc};
 
+use anyhow::{anyhow, Result};
 use integer_encoding::VarInt;
 
 pub struct ValueStruct {
@@ -35,6 +36,21 @@ impl ValueStruct {
         buf.extend_from_slice(&self.expires_at.encode_var_vec());
         buf.extend_from_slice(&self.value);
         buf
+    }
+
+    pub fn decode(data: &[u8]) -> Result<ValueStruct> {
+        let meta = data[0];
+        let user_meta = data[0];
+        let (expires_at, sz) = u64::decode_var(&data[2..]).ok_or(anyhow!(""))?;
+        let value = &data[sz + 2..];
+
+        Ok(ValueStruct {
+            meta,
+            user_meta,
+            expires_at,
+            value: Arc::new(value.to_vec()),
+            version: 0,
+        })
     }
 }
 

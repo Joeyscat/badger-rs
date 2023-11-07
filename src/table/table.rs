@@ -9,7 +9,7 @@ use prost::Message;
 use crate::option::{self, ChecksumVerificationMode::*};
 use crate::util::bloom;
 use crate::util::file::open_mmap_file;
-use crate::util::iter::Iterator as _;
+use crate::util::iter::IteratorI as _;
 use crate::util::num::{bytes_to_u32, bytes_to_u32_vec};
 use crate::util::{file::MmapFile, table::parse_file_id};
 use crate::{fb, pb, util};
@@ -269,8 +269,17 @@ impl TableInner {
         Ok(block)
     }
 
-    fn verify_checksum(&mut self) -> Result<()> {
-        todo!()
+    fn verify_checksum(&self) -> Result<()> {
+        let index = self.get_table_index()?;
+        for i in 0..index.offsets().unwrap().len() {
+            let block = self.block(i)?;
+
+            if !(self.opt.cv_mode == OnBlockRead || self.opt.cv_mode == OnTableAndBlockRead) {
+                block.verify_checksum()?;
+            }
+        }
+
+        Ok(())
     }
 
     fn init_index(&mut self) -> Result<()> {
@@ -393,7 +402,9 @@ pub(crate) struct Block {
 
 impl Block {
     fn verify_checksum(&self) -> Result<()> {
-        todo!()
+        let expected_checksum = pb::Checksum::decode(BytesMut::from(self.checksum.as_slice()))?;
+        util::verify_checksum(&self.data, expected_checksum)
+            .map_err(|e| anyhow!("failed to verify checksum for block: {}", e))
     }
 }
 
@@ -401,16 +412,74 @@ impl Block {
 mod tests {
     use super::{CheapIndex, Table, TableInner};
     use crate::{
-        option,
+        option::{self, ChecksumVerificationMode},
         table::builder::Builder,
-        test::bt,
-        util::{file::open_mmap_file, kv::key_with_ts},
+        test::{
+            bt,
+            table::{build_test_table, get_test_options, key},
+        },
+        util::{file::open_mmap_file, iter::IteratorI, kv::key_with_ts},
         value::ValueStruct,
     };
     use rand::RngCore;
-    use std::{cell::RefCell, rc::Rc};
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
     use temp_dir::TempDir;
     use test_log::test;
+
+    #[test(tokio::test)]
+    async fn test_iterator() {
+        for n in vec![99, 100, 101] {
+            let opts = get_test_options();
+            let tbl = build_test_table("key", n, opts).await.unwrap();
+            let mut iter = tbl.new_iterator();
+            assert!(iter.seek_to_first().unwrap());
+            let mut count = 0;
+            while iter.valid().unwrap() {
+                let v = iter.value_struct().unwrap();
+                let expected_key = key_with_ts(key("key", count).into_bytes(), 0);
+                assert_eq!(&expected_key, iter.key());
+                let expected_value = count.to_string().into_bytes();
+                assert_eq!(&expected_value, v.value.as_ref());
+                count += 1;
+                iter.next().unwrap();
+            }
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_seek_to_first() {
+        for n in vec![99, 100, 101, 199, 200, 250, 9999, 10000] {
+            let opts = get_test_options();
+            let tbl = build_test_table("key", n, opts).await.unwrap();
+            let mut iter = tbl.new_iterator();
+            assert!(iter.seek_to_first().unwrap());
+            assert!(iter.valid().unwrap());
+            let v = iter.value_struct().unwrap();
+            assert_eq!(&Vec::from("0"), v.value.as_ref());
+            assert_eq!(b'A', v.meta);
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_seek_to_last() {
+        for n in vec![99, 100, 101, 199, 200, 250, 9999, 10000] {
+            let opts = get_test_options();
+            let tbl = build_test_table("key", n, opts).await.unwrap();
+            let mut iter = tbl.new_iterator();
+
+            assert!(iter.seek_to_last().unwrap());
+            assert!(iter.valid().unwrap());
+            let v = iter.value_struct().unwrap();
+            assert_eq!(&Vec::from((n - 1).to_string()), v.value.as_ref());
+            assert_eq!(b'A', v.meta);
+
+            assert!(iter.prev().unwrap());
+            assert!(iter.valid().unwrap());
+            let v = iter.value_struct().unwrap();
+            assert_eq!(&Vec::from((n - 2).to_string()), v.value.as_ref());
+            assert_eq!(b'A', v.meta);
+        }
+    }
 
     #[test(tokio::test)]
     async fn test_init_index() {
@@ -523,5 +592,42 @@ mod tests {
         drop(inner);
         drop(tbl);
         std::fs::remove_file(filepath).unwrap();
+    }
+
+    #[test(tokio::test)]
+    async fn test_checksum() {
+        let mut opts = get_test_options();
+        opts.cv_mode = ChecksumVerificationMode::OnTableAndBlockRead;
+
+        let tbl = build_test_table("k", 10000, opts).await.unwrap();
+
+        tbl.inner.borrow().verify_checksum().unwrap();
+
+        tbl.inner.borrow_mut().mmap_file.data.borrow_mut()[128..228]
+            .fill_with(|| rand::random::<u8>());
+
+        assert!(tbl.inner.borrow().verify_checksum().is_err());
+    }
+
+    #[test(tokio::test)]
+    async fn test_max_version() {
+        let opts = get_test_options();
+        let mut b = Builder::new(opts);
+
+        let test_dir = TempDir::new().unwrap();
+        let filepath = test_dir
+            .path()
+            .join(format!("{}.sst", rand::thread_rng().next_u32()));
+        const N: u64 = 1000;
+        for i in 0..N {
+            b.add(
+                key_with_ts(format!("foo:{}", i).into_bytes(), i + 1),
+                ValueStruct::new(Arc::new(vec![])),
+                0,
+            );
+        }
+
+        let tbl = Table::create(filepath, b).await.unwrap();
+        assert_eq!(N, tbl.max_version());
     }
 }

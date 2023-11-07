@@ -5,7 +5,8 @@ use log::{error, warn};
 
 use crate::{
     table::{Header, HEADER_SIZE},
-    util::iter::Iterator as Iter,
+    util::iter::IteratorI,
+    value::ValueStruct,
 };
 
 use super::{Block, TableInner};
@@ -78,7 +79,7 @@ impl BlockIterator {
     }
 }
 
-impl Iter for BlockIterator {
+impl IteratorI for BlockIterator {
     fn seek(&mut self, key: &[u8]) -> Result<bool> {
         let start_index = 0;
         let entry_index = match (start_index..self.entry_offsets().len())
@@ -137,11 +138,18 @@ pub struct Iterator {
 
 impl Iterator {
     pub(crate) fn new(table: Rc<RefCell<TableInner>>) -> Iterator {
-        Iterator {
+        let mut iter = Iterator {
             table,
             bpos: 0,
             bi: BlockIterator::default(),
-        }
+        };
+
+        iter
+    }
+
+    pub fn value_struct(&self) -> Result<ValueStruct> {
+        let data = self.value();
+        ValueStruct::decode(data)
     }
 
     fn seek_from(&mut self, key: &[u8]) -> Result<bool> {
@@ -187,7 +195,7 @@ impl Iterator {
     }
 }
 
-impl Iter for Iterator {
+impl IteratorI for Iterator {
     fn seek(&mut self, key: &[u8]) -> Result<bool> {
         self.seek_from(key)
     }

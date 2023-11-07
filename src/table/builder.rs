@@ -367,9 +367,10 @@ mod tests {
 
     use crate::{
         table::{Options, Table},
+        test::table::build_test_table,
         util::{
             bloom,
-            iter::Iterator,
+            iter::IteratorI,
             kv::{key_with_ts, parse_key},
         },
         value::ValueStruct,
@@ -387,53 +388,6 @@ mod tests {
             );
         }
         builder
-    }
-
-    async fn build_test_table(prefix: &str, n: u32, opts: Options) -> Result<Table> {
-        let opts = if opts.block_size == 0 {
-            let mut temp = opts.clone();
-            temp.block_size = 4 * 1024;
-            temp
-        } else {
-            opts
-        };
-        assert!(n <= 10000);
-
-        let mut kvs = Vec::with_capacity(n as usize);
-        for i in 0..n {
-            kvs.push((key(prefix, i), format!("{}", i)));
-        }
-
-        return build_table(kvs, opts).await;
-    }
-
-    async fn build_table(mut kvs: Vec<(String, String)>, opts: Options) -> Result<Table> {
-        kvs.sort_by_key(|e| e.0.as_ptr());
-
-        let mut builder = Builder::new(opts);
-        for (k, v) in kvs {
-            builder.add(
-                key_with_ts(k.into(), 0),
-                ValueStruct {
-                    meta: b'A',
-                    user_meta: 0,
-                    expires_at: 0,
-                    value: Arc::new(v.into()),
-                    version: 0,
-                },
-                0,
-            );
-        }
-        let test_dir = TempDir::new()?;
-        let filepath = test_dir
-            .path()
-            .join(format!("{}.sst", rand::thread_rng().next_u32()));
-
-        Table::create(filepath, builder).await
-    }
-
-    fn key(prefix: &str, i: u32) -> String {
-        format!("{}{:04}", prefix, i)
     }
 
     #[test]
