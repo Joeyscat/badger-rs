@@ -38,7 +38,17 @@ pub fn calculate_checksum(data: &[u8], ca: pb::checksum::Algorithm) -> u64 {
     };
 }
 
-pub mod kv {
+pub(crate) mod kv {
+    use std::cmp::Ordering;
+
+    pub fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
+        let x = a[..a.len() - 8].cmp(&b[..b.len() - 8]);
+        if x.is_ne() {
+            return x;
+        }
+        a[a.len() - 8..].cmp(&b[b.len() - 8..])
+    }
+
     pub fn parse_key(key: &[u8]) -> Vec<u8> {
         if key.len() == 0 {
             return vec![];

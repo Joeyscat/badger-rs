@@ -214,7 +214,9 @@ pub(crate) struct TableInner {
 }
 
 impl TableInner {
-    pub(crate) fn block(&self, idx: usize) -> Result<Block> {
+    pub(crate) fn block(&self, idx: isize) -> Result<Block> {
+        assert!(idx >= 0);
+        let idx: usize = idx as usize;
         if idx >= self.offsets_len() {
             bail!("block out of index")
         }
@@ -272,7 +274,7 @@ impl TableInner {
     fn verify_checksum(&self) -> Result<()> {
         let index = self.get_table_index()?;
         for i in 0..index.offsets().unwrap().len() {
-            let block = self.block(i)?;
+            let block = self.block(i as isize)?;
 
             if !(self.opt.cv_mode == OnBlockRead || self.opt.cv_mode == OnTableAndBlockRead) {
                 block.verify_checksum()?;
@@ -418,7 +420,11 @@ mod tests {
             bt,
             table::{build_test_table, get_test_options, key},
         },
-        util::{file::open_mmap_file, iter::IteratorI, kv::key_with_ts},
+        util::{
+            file::open_mmap_file,
+            iter::IteratorI,
+            kv::{key_with_ts, parse_key},
+        },
         value::ValueStruct,
     };
     use rand::RngCore;
@@ -453,7 +459,6 @@ mod tests {
             let tbl = build_test_table("key", n, opts).await.unwrap();
             let mut iter = tbl.new_iterator();
             assert!(iter.seek_to_first().unwrap());
-            assert!(iter.valid().unwrap());
             let v = iter.value_struct().unwrap();
             assert_eq!(&Vec::from("0"), v.value.as_ref());
             assert_eq!(b'A', v.meta);
@@ -468,17 +473,166 @@ mod tests {
             let mut iter = tbl.new_iterator();
 
             assert!(iter.seek_to_last().unwrap());
-            assert!(iter.valid().unwrap());
             let v = iter.value_struct().unwrap();
             assert_eq!(&Vec::from((n - 1).to_string()), v.value.as_ref());
             assert_eq!(b'A', v.meta);
 
             assert!(iter.prev().unwrap());
-            assert!(iter.valid().unwrap());
             let v = iter.value_struct().unwrap();
             assert_eq!(&Vec::from((n - 2).to_string()), v.value.as_ref());
             assert_eq!(b'A', v.meta);
         }
+    }
+
+    #[test(tokio::test)]
+    async fn test_seek() {
+        let opts = get_test_options();
+        let tbl = build_test_table("k", 10000, opts).await.unwrap();
+        let mut iter = tbl.new_iterator();
+
+        for (in_, valid, out) in vec![
+            ("abc", true, "k0000"),
+            ("k0100", true, "k0100"),
+            ("k0100b", true, "k0101"),
+            ("k1234", true, "k1234"),
+            ("k1234b", true, "k1235"),
+            ("k9999", true, "k9999"),
+            ("z", false, ""),
+        ] {
+            assert_eq!(valid, iter.seek(&key_with_ts(Vec::from(in_), 0)).unwrap());
+            assert_eq!(valid, iter.valid().unwrap());
+            if valid {
+                assert_eq!(out.as_bytes(), parse_key(iter.key()));
+            }
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_seek_for_prev() {
+        let opts = get_test_options();
+        let tbl = build_test_table("k", 10000, opts).await.unwrap();
+        let mut iter = tbl.new_iterator();
+
+        for (in_, valid, out) in vec![
+            ("abc", false, ""),
+            ("k0100", true, "k0100"),
+            ("k0100b", true, "k0100"),
+            ("k1234", true, "k1234"),
+            ("k1234b", true, "k1234"),
+            ("k9999", true, "k9999"),
+            ("z", true, "k9999"),
+        ] {
+            println!("seek_for_prev({})", in_);
+            assert_eq!(
+                valid,
+                iter.seek_for_prev(&key_with_ts(Vec::from(in_), 0)).unwrap()
+            );
+            assert_eq!(valid, iter.valid().unwrap());
+            if valid {
+                assert_eq!(out.as_bytes(), parse_key(iter.key()));
+            }
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_iterate_from_start() {
+        for n in vec![99, 100, 101, 199, 200, 250, 9999, 10000] {
+            println!("test_iterator_from_start, n={}", n);
+            let opts = get_test_options();
+            let tbl = build_test_table("key", n, opts).await.unwrap();
+            let mut iter = tbl.new_iterator();
+
+            assert!(iter.seek_to_first().unwrap());
+
+            let mut count = 0;
+            while iter.valid().unwrap() {
+                let v = iter.value_struct().unwrap();
+                assert_eq!(&count.to_string().into_bytes(), v.value.as_ref());
+                assert_eq!(b'A', v.meta);
+                count += 1;
+                iter.next().unwrap();
+            }
+            assert_eq!(n, count);
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_iterate_from_end() {
+        for n in vec![99, 100, 101, 199, 200, 250, 9999, 10000] {
+            println!("test_iterator_from_end, n={}", n);
+            let opts = get_test_options();
+            let tbl = build_test_table("key", n, opts).await.unwrap();
+            let mut iter = tbl.new_iterator();
+
+            assert!(!iter.seek(&key_with_ts(Vec::from("zzzzzz"), 0)).unwrap()); // seek to end, an invalid element.
+            assert!(!iter.valid().unwrap());
+            for i in (0..n).rev() {
+                assert!(iter.prev().unwrap());
+                let v = iter.value_struct().unwrap();
+                assert_eq!(&i.to_string().into_bytes(), v.value.as_ref());
+                assert_eq!(b'A', v.meta);
+            }
+            assert!(!iter.prev().unwrap());
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_iterate_seek_and_next() {
+        let opts = get_test_options();
+        let tbl = build_test_table("key", 10000, opts).await.unwrap();
+        let mut iter = tbl.new_iterator();
+
+        let mut kid = 1010;
+        assert!(iter
+            .seek(&key_with_ts(Vec::from(key("key", kid)), 0))
+            .unwrap());
+
+        while iter.valid().unwrap() {
+            assert_eq!(parse_key(iter.key()), key("key", kid).as_bytes());
+            kid += 1;
+            iter.next().unwrap();
+        }
+        assert!(!iter.prev().unwrap());
+        assert_eq!(10000, kid);
+
+        assert!(!iter
+            .seek(&key_with_ts(Vec::from(key("key", 99999)), 0))
+            .unwrap());
+
+        assert!(iter
+            .seek(&key_with_ts(Vec::from(key("key", -1)), 0))
+            .unwrap());
+        assert_eq!(parse_key(iter.key()), key("key", 0).as_bytes());
+    }
+
+    #[test(tokio::test)]
+    async fn test_iterate_back_and_forth() {
+        let opts = get_test_options();
+        let tbl = build_test_table("key", 10000, opts).await.unwrap();
+        let mut iter = tbl.new_iterator();
+
+        assert!(iter
+            .seek(&key_with_ts(Vec::from(key("key", 1010)), 0))
+            .unwrap());
+
+        assert!(iter.prev().unwrap());
+        assert!(iter.prev().unwrap());
+        assert_eq!(parse_key(iter.key()), key("key", 1008).as_bytes());
+
+        assert!(iter.next().unwrap());
+        assert!(iter.next().unwrap());
+        assert_eq!(parse_key(iter.key()), key("key", 1010).as_bytes());
+
+        assert!(iter
+            .seek(&key_with_ts(Vec::from(key("key", 2000)), 0))
+            .unwrap());
+        assert_eq!(parse_key(iter.key()), key("key", 2000).as_bytes());
+
+        assert!(iter.prev().unwrap());
+        assert_eq!(parse_key(iter.key()), key("key", 1999).as_bytes());
+
+        assert!(iter.seek_to_first().unwrap());
+        assert_eq!(parse_key(iter.key()), key("key", 0).as_bytes());
     }
 
     #[test(tokio::test)]

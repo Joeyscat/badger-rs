@@ -46,7 +46,7 @@ pub(crate) mod table {
         assert!(n <= 10000);
 
         let mut kvs = Vec::with_capacity(n as usize);
-        for i in 0..n {
+        for i in 0..n as i64 {
             kvs.push((key(prefix, i), i.to_string()));
         }
 
@@ -76,7 +76,7 @@ pub(crate) mod table {
         Table::create(filepath, builder).await
     }
 
-    pub(crate) fn key(prefix: &str, i: u32) -> String {
+    pub(crate) fn key(prefix: &str, i: i64) -> String {
         format!("{}{:04}", prefix, i)
     }
 }

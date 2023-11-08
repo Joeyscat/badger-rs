@@ -358,15 +358,12 @@ impl BuildData {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use anyhow::Result;
-    use rand::RngCore;
-    use temp_dir::TempDir;
     use test_log::test;
 
     use crate::{
-        table::{Options, Table},
+        table::Options,
         test::table::build_test_table,
         util::{
             bloom,

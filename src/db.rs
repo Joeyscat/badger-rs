@@ -183,11 +183,6 @@ mod tests {
     use crate::test::bt;
     use temp_dir::TempDir;
     use test_log::test;
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
-    fn init_log() {
-        tracing_subscriber::registry().with(fmt::layer()).init();
-    }
 
     async fn create_test_db(opt: Options) -> DB {
         let mf = open_or_create_manifest_file(&opt).await.unwrap();
