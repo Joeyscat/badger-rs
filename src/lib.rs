@@ -4,11 +4,9 @@ pub mod iterator;
 pub mod option;
 pub mod txn;
 
-mod compaction;
 mod entry;
 mod fb;
 mod level;
-mod level_handler;
 mod manifest;
 mod memtable;
 mod skiplist;

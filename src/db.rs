@@ -6,11 +6,12 @@ use tokio::{fs::read_dir, sync::Mutex};
 
 use crate::{
     error::Error,
-    level::LevelsController,
+    level::level::LevelsController,
     manifest::{open_or_create_manifest_file, ManifestFile},
     memtable::{open_mem_table, MemTable, MEM_FILE_EXT},
     option::Options,
     txn::Txn,
+    vlog::ValueLog,
 };
 
 pub struct DB {
@@ -69,6 +70,11 @@ impl DB {
                 .await
                 .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
         ));
+
+        let mut vlog = ValueLog::new(db.opt.clone())?;
+        vlog.open().await?;
+
+        // TODO flush memtable
 
         Ok(db)
     }

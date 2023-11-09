@@ -127,4 +127,7 @@ pub enum Error {
 
     #[error("Do truncate")]
     VLogTruncate,
+
+    #[error("Unexpected end of file")]
+    Eof,
 }

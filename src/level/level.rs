@@ -3,16 +3,17 @@ use log::info;
 use std::{collections::HashMap, fs::remove_file, rc::Rc, sync::atomic::AtomicU64};
 
 use crate::{
-    compaction::{CompactStatus, LevelCompactStatus},
-    level_handler::LevelHandler,
+    level::compaction::LevelCompactStatus,
     manifest::Manifest,
     option::Options,
-    table::{self, Table},
+    table::Table,
     util::{
         self,
         file::{open_mmap_file, sync_dir},
     },
 };
+
+use super::{compaction::CompactStatus, level_handler::LevelHandler};
 
 pub struct LevelsController {
     next_file_id: AtomicU64,
