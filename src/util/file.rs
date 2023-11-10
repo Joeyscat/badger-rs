@@ -2,8 +2,10 @@ use std::{
     cell::RefCell,
     fmt::Display,
     io::{ErrorKind, Read},
+    ops::DerefMut,
     path::{Path, PathBuf},
     rc::Rc,
+    slice,
 };
 
 use anyhow::{anyhow, bail, Result};
@@ -18,6 +20,19 @@ pub fn sync_dir<P: AsRef<Path>>(dir: P) -> Result<()> {
 pub struct MmapFile {
     pub data: Rc<RefCell<memmap2::MmapMut>>,
     pub file: std::sync::Mutex<Filex>,
+}
+
+impl AsRef<[u8]> for MmapFile {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.data.borrow().as_ptr() as _, self.data.borrow().len()) }
+    }
+}
+
+impl AsMut<[u8]> for MmapFile {
+    fn as_mut(&mut self) -> &mut [u8] {
+        let l = self.data.borrow().len();
+        unsafe { slice::from_raw_parts_mut(self.data.borrow_mut().as_mut_ptr() as _, l) }
+    }
 }
 
 impl MmapFile {

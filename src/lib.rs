@@ -1,3 +1,7 @@
+#![feature(
+    slice_as_chunks,
+)]
+
 pub mod db;
 pub mod error;
 pub mod iterator;

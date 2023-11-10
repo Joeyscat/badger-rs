@@ -1,9 +1,7 @@
-use std::{
-    path::Path,
-    sync::{self, Arc, Mutex},
-};
+use std::{path::Path, sync::Mutex};
 
 use anyhow::Result;
+use bytes::Buf;
 use log::info;
 
 use crate::{
@@ -151,13 +149,11 @@ impl DiscardStats {
         Ok(())
     }
 
-    // todo test
     fn sort(&mut self) {
-        let v = unsafe {
-            std::mem::transmute::<&mut [u8], &mut [u128]>(self.mfile.data.borrow_mut().as_mut())
-        };
-
-        v.sort_by_key(|i| i >> 64);
+        let x = *self.next_empty_slot.lock().unwrap() * 16;
+        let slice = &mut self.mfile.as_mut()[..x];
+        let chunks = unsafe { slice.as_chunks_unchecked_mut::<16>() };
+        chunks.sort_unstable_by(|a, b| a.as_ref().get_u64().cmp(&b.as_ref().get_u64()));
     }
 }
 
@@ -165,12 +161,12 @@ impl DiscardStats {
 mod tests {
     use temp_dir::TempDir;
 
-    use crate::option::Options;
+    use crate::{db::DB, option::Options};
 
     use super::DiscardStats;
 
     #[tokio::test]
-    async fn test1() {
+    async fn test_discard_stats() {
         let test_dir = TempDir::new().unwrap();
 
         let mut opt = Options::default();
@@ -184,8 +180,42 @@ mod tests {
         for i in 0..20 {
             assert_eq!(i as i64 * 100, ds.update(i, i as i64 * 100).unwrap());
         }
-        ds.iterate(|id,val|{
-            todo!()
-        });
+        ds.iterate(|id, val| {
+            assert_eq!(id * 100, val);
+        })
+        .unwrap();
+        for i in 0..10 {
+            assert_eq!(0, ds.update(i, -1).unwrap());
+        }
+        ds.iterate(|id, val| {
+            if id < 10 {
+                assert_eq!(0, val);
+            }
+            assert_eq!(id * 100, val);
+        })
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reload_discard_stats() {
+        let test_dir = TempDir::new().unwrap();
+
+        let mut opt = Options::default();
+        opt.dir = test_dir.path().to_str().unwrap().to_string();
+        opt.value_dir = opt.dir.clone();
+
+        let mut db = DB::open(opt.clone()).await.unwrap();
+        let ds = &mut db.vlog.discard_stats;
+
+        ds.update(1, 1).unwrap();
+        ds.update(2, 1).unwrap();
+        ds.update(1, -1).unwrap();
+        db.close().unwrap();
+
+        let mut db = DB::open(opt).await.unwrap();
+        let ds = &mut db.vlog.discard_stats;
+
+        assert_eq!(0, ds.update(1, 0).unwrap());
+        assert_eq!(1, ds.update(2, 0).unwrap());
     }
 }

@@ -124,11 +124,11 @@ impl MemTable {
     }
 }
 
-pub struct LogFile {
+pub(crate) struct LogFile {
     mmap_file: MmapFile,
-    path: String,
+    pub(crate) path: String,
     fid: u32,
-    size: atomic::AtomicU32,
+    pub(crate) size: atomic::AtomicU32,
     // data_key: pb::DataKey,
     base_iv: Vec<u8>,
     write_at: u32,
@@ -214,7 +214,7 @@ impl LogFile {
         self.mmap_file.data.borrow_mut()[start..end].fill(0_u8);
     }
 
-    fn iterate<F>(&self, offset: u32, mut f: F) -> Result<u32>
+    pub(crate) fn iterate<F>(&self, offset: u32, mut f: F) -> Result<u32>
     where
         F: FnMut(Entry, ValuePointer) -> Result<()>,
     {
@@ -352,7 +352,7 @@ impl LogFile {
         Ok(e)
     }
 
-    async fn truncate(&mut self, offset: u32) -> Result<()> {
+    pub(crate) async fn truncate(&mut self, offset: u32) -> Result<()> {
         if self
             .mmap_file
             .file

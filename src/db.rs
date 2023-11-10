@@ -27,7 +27,7 @@ pub struct DB {
     opt: Options,
     manifest: Rc<RefCell<ManifestFile>>,
     lc: LevelsController,
-    // vlog: ValueLog,
+    pub(crate) vlog: ValueLog,
     // write_ch: Receiver<Request>,
     // flush_ch: Receiver<MemTable>,
     // close_once: std::sync::Once,
@@ -48,6 +48,9 @@ impl DB {
         .await?;
         let mf = Rc::new(RefCell::new(mf));
 
+        let mut vlog = ValueLog::new(opt.clone()).await?;
+        vlog.open().await?;
+
         let mut db = DB {
             mt: None,
             lc,
@@ -55,6 +58,7 @@ impl DB {
             next_mem_fid: 0,
             opt: opt.clone(),
             manifest: Rc::clone(&mf),
+            vlog,
             // flush_ch: todo!(),
             // close_once: todo!(),
             // block_writes: todo!(),
@@ -70,9 +74,6 @@ impl DB {
                 .await
                 .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
         ));
-
-        let mut vlog = ValueLog::new(db.opt.clone())?;
-        vlog.open().await?;
 
         // TODO flush memtable
 
@@ -203,9 +204,10 @@ mod tests {
             mt: None,
             imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
             next_mem_fid: 0,
-            opt,
             manifest,
             lc,
+            vlog: ValueLog::new(opt.clone()).await.unwrap(),
+            opt,
         }
     }
 
