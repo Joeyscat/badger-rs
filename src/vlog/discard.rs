@@ -4,22 +4,41 @@ use anyhow::Result;
 use bytes::Buf;
 use log::info;
 
-use crate::{
-    option::Options,
-    util::file::{open_mmap_file, MmapFile},
-};
+use crate::util::file::{open_mmap_file, MmapFile};
 
 const DISCARD_FNAME: &str = "DISCARD";
 
-pub(crate) struct DiscardStats {
+pub(crate) struct DiscardStats(Mutex<DiscardStatsInner>);
+
+struct DiscardStatsInner {
     mfile: MmapFile,
-    next_empty_slot: Mutex<usize>,
-    opt: Options,
+    next_empty_slot: usize,
 }
 
 impl DiscardStats {
-    pub(crate) async fn new(opt: Options) -> Result<Self> {
-        let fname = Path::new(&opt.value_dir).join(DISCARD_FNAME);
+    pub(crate) async fn new(dir: &str) -> Result<Self> {
+        Ok(DiscardStats(Mutex::new(DiscardStatsInner::new(dir).await?)))
+    }
+
+    pub(crate) fn update(&mut self, fid: u64, discard: i64) -> Result<i64> {
+        self.0.lock().unwrap().update(fid, discard)
+    }
+
+    pub(crate) fn iterate<F>(&self, f: F) -> Result<()>
+    where
+        F: FnMut(u64, u64),
+    {
+        self.0.lock().unwrap().iterate(f)
+    }
+
+    pub(crate) fn max_discard(&self) -> Result<(u32, u64)> {
+        self.0.lock().unwrap().max_discard()
+    }
+}
+
+impl DiscardStatsInner {
+    async fn new(dir: &str) -> Result<Self> {
+        let fname = Path::new(dir).join(DISCARD_FNAME);
 
         let (mfile, is_new) = open_mmap_file(
             fname,
@@ -31,41 +50,37 @@ impl DiscardStats {
         )
         .await?;
 
-        let mut lf = DiscardStats {
+        let mut lf = DiscardStatsInner {
             mfile,
-            opt,
-            next_empty_slot: Mutex::new(0),
+            next_empty_slot: 0,
         };
         if is_new {
             lf.zero_out()?;
         }
 
         for slot in 0..lf.max_slot() {
-            if lf.get(16 * slot)? == 0 {
-                *lf.next_empty_slot.lock().unwrap() = slot;
+            let x = lf.get(16 * slot)?;
+            if x == 0 {
+                lf.next_empty_slot = slot;
                 break;
             }
         }
 
         lf.sort();
-        info!(
-            "Discard stats next_empty_slot: {}",
-            *lf.next_empty_slot.lock().unwrap()
-        );
+        info!("Discard stats next_empty_slot: {}", lf.next_empty_slot);
 
         Ok(lf)
     }
 
-    pub(crate) fn update(&mut self, fid: u64, discard: i64) -> Result<i64> {
-        let mut next_empty_slot = *self.next_empty_slot.lock().unwrap();
-        let idx = match (0..next_empty_slot)
+    fn update(&mut self, fid: u64, discard: i64) -> Result<i64> {
+        let idx = match (0..self.next_empty_slot)
             .collect::<Vec<usize>>()
             .binary_search_by(|slot| self.get(slot * 16).unwrap().cmp(&fid))
         {
             Ok(idx) => idx,
             Err(idx) => idx,
         };
-        if idx < next_empty_slot && self.get(idx * 16)? == fid {
+        if idx < self.next_empty_slot && self.get(idx * 16)? == fid {
             let off = idx * 16 + 8;
             let cur_disc = self.get(off)?;
             if discard == 0 {
@@ -83,13 +98,13 @@ impl DiscardStats {
             return Ok(0);
         }
 
-        let idx = next_empty_slot;
+        let idx = self.next_empty_slot;
         self.set(idx * 16, fid)?;
         self.set(idx * 16 + 8, discard as u64)?;
 
-        next_empty_slot += 1;
+        self.next_empty_slot += 1;
         loop {
-            if next_empty_slot < self.max_slot() {
+            if self.next_empty_slot < self.max_slot() {
                 break;
             }
             let l = self.mfile.data.borrow().len() as u64;
@@ -102,18 +117,18 @@ impl DiscardStats {
         Ok(discard)
     }
 
-    pub(crate) fn iterate<F>(&self, mut f: F) -> Result<()>
+    fn iterate<F>(&self, mut f: F) -> Result<()>
     where
         F: FnMut(u64, u64),
     {
-        for slot in 0..*self.next_empty_slot.lock().unwrap() {
+        for slot in 0..self.next_empty_slot {
             let idx = 16 * slot;
             f(self.get(idx)?, self.get(idx + 8)?);
         }
         Ok(())
     }
 
-    pub(crate) fn max_discard(&self) -> Result<(u32, u64)> {
+    fn max_discard(&self) -> Result<(u32, u64)> {
         let mut max_fid = 0;
         let mut max_val = 0;
 
@@ -128,29 +143,28 @@ impl DiscardStats {
     }
 
     fn zero_out(&mut self) -> Result<()> {
-        let x = *self.next_empty_slot.lock().unwrap();
-        self.set(x * 16, 0)?;
-        self.set(x * 16 + 8, 0)?;
+        self.set(self.next_empty_slot * 16, 0)?;
+        self.set(self.next_empty_slot * 16 + 8, 0)?;
         Ok(())
     }
 
     fn max_slot(&self) -> usize {
-        return self.mfile.data.borrow().len();
+        return self.mfile.as_ref().len();
     }
 
     fn get(&self, offset: usize) -> Result<u64> {
         return Ok(u64::from_be_bytes(
-            self.mfile.data.borrow()[offset..offset + 8].try_into()?,
+            self.mfile.as_ref()[offset..offset + 8].try_into()?,
         ));
     }
 
     fn set(&mut self, offset: usize, value: u64) -> Result<()> {
-        self.mfile.data.borrow_mut()[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+        self.mfile.as_mut()[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }
 
     fn sort(&mut self) {
-        let x = *self.next_empty_slot.lock().unwrap() * 16;
+        let x = self.next_empty_slot * 16;
         let slice = &mut self.mfile.as_mut()[..x];
         let chunks = unsafe { slice.as_chunks_unchecked_mut::<16>() };
         chunks.sort_unstable_by(|a, b| a.as_ref().get_u64().cmp(&b.as_ref().get_u64()));
@@ -171,9 +185,8 @@ mod tests {
 
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
-        opt.value_dir = opt.dir.clone();
-        let mut ds = DiscardStats::new(opt).await.unwrap();
-        assert_eq!(*ds.next_empty_slot.lock().unwrap(), 0);
+        let mut ds = DiscardStats::new(&opt.dir).await.unwrap();
+        assert_eq!(ds.0.lock().unwrap().next_empty_slot, 0);
         let (fid, _) = ds.max_discard().unwrap();
         assert_eq!(fid, 0);
 
@@ -190,8 +203,9 @@ mod tests {
         ds.iterate(|id, val| {
             if id < 10 {
                 assert_eq!(0, val);
+            } else {
+                assert_eq!(id * 100, val);
             }
-            assert_eq!(id * 100, val);
         })
         .unwrap();
     }
@@ -202,7 +216,6 @@ mod tests {
 
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
-        opt.value_dir = opt.dir.clone();
 
         let mut db = DB::open(opt.clone()).await.unwrap();
         let ds = &mut db.vlog.discard_stats;
@@ -210,12 +223,13 @@ mod tests {
         ds.update(1, 1).unwrap();
         ds.update(2, 1).unwrap();
         ds.update(1, -1).unwrap();
-        db.close().unwrap();
+        // db.close().unwrap();
+        drop(db);
 
-        let mut db = DB::open(opt).await.unwrap();
-        let ds = &mut db.vlog.discard_stats;
+        let mut dbs = DB::open(opt).await.unwrap();
+        let ds2 = &mut dbs.vlog.discard_stats;
 
-        assert_eq!(0, ds.update(1, 0).unwrap());
-        assert_eq!(1, ds.update(2, 0).unwrap());
+        assert_eq!(0, ds2.update(1, 0).unwrap());
+        assert_eq!(1, ds2.update(2, 0).unwrap());
     }
 }

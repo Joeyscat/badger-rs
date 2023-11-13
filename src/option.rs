@@ -7,7 +7,6 @@ const MAX_VALUE_THRESHOLD: u32 = 1 << 20;
 pub struct Options {
     // required options.
     pub dir: String,
-    pub value_dir: String,
 
     // usually modified options.
     pub sync_writes: bool,
@@ -85,7 +84,6 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             dir: "/tmp/badger".to_string(),
-            value_dir: "/tmp/badger".to_string(),
 
             sync_writes: false,
             num_versions_to_keep: 1,

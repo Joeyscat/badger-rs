@@ -48,8 +48,7 @@ impl DB {
         .await?;
         let mf = Rc::new(RefCell::new(mf));
 
-        let mut vlog = ValueLog::new(opt.clone()).await?;
-        vlog.open().await?;
+        let vlog = ValueLog::open(opt.clone()).await?;
 
         let mut db = DB {
             mt: None,
@@ -206,7 +205,7 @@ mod tests {
             next_mem_fid: 0,
             manifest,
             lc,
-            vlog: ValueLog::new(opt.clone()).await.unwrap(),
+            vlog: ValueLog::open(opt.clone()).await.unwrap(),
             opt,
         }
     }

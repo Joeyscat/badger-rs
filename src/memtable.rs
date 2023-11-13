@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     fmt::Display,
     io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::atomic,
     sync::atomic::Ordering::Relaxed,
@@ -55,7 +55,8 @@ pub async fn open_mem_table(
     fid: u32,
     oopt: &std::fs::OpenOptions,
 ) -> Result<(MemTable, bool)> {
-    let (wal, is_new_file) = LogFile::open(opt.clone(), fid, oopt, 2 * opt.mem_table_size).await?;
+    let path = Path::new(&opt.dir).join(format!("{:05}{}", fid, MEM_FILE_EXT));
+    let (wal, is_new_file) = LogFile::open(path, fid, oopt, 2 * opt.mem_table_size).await?;
 
     let mut mt = MemTable {
         sl: crossbeam_skiplist::SkipMap::new(),
@@ -136,13 +137,11 @@ pub(crate) struct LogFile {
 
 impl LogFile {
     pub async fn open(
-        opt: Options,
+        path: PathBuf,
         fid: u32,
         oopt: &std::fs::OpenOptions,
         file_size: usize,
     ) -> Result<(Self, bool)> {
-        let path = PathBuf::from(&opt.dir).join(format!("{:05}{}", fid, MEM_FILE_EXT));
-
         let (mmapfile, is_new_file) = open_mmap_file(&path, oopt, file_size)
             .await
             .map_err(|e| anyhow!("Open mmap file error: {}", e))?;
@@ -403,9 +402,11 @@ mod tests {
 
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
+        let fid = 1;
+        let path = Path::new(&opt.dir).join(format!("{:05}{}", fid, MEM_FILE_EXT));
         let r = LogFile::open(
-            opt.clone(),
-            1,
+            path,
+            fid,
             std::fs::File::options().read(true).write(true).create(true),
             opt.mem_table_size,
         )
