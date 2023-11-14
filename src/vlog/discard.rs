@@ -107,7 +107,7 @@ impl DiscardStatsInner {
             if self.next_empty_slot < self.max_slot() {
                 break;
             }
-            let l = self.mfile.data.borrow().len() as u64;
+            let l = self.mfile.as_ref().len() as u64;
             self.mfile.truncate(l * 2)?;
         }
         self.zero_out()?;

@@ -95,7 +95,7 @@ impl Table {
     pub(crate) async fn create<P: AsRef<Path>>(filepath: P, builder: Builder) -> Result<Self> {
         let opts = builder.opts;
         let bd = builder.done();
-        let mfile = match open_mmap_file(
+        let mut mfile = match open_mmap_file(
             filepath,
             std::fs::OpenOptions::new()
                 .read(true)
@@ -115,12 +115,8 @@ impl Table {
             }
         };
 
-        let written = bd.dump(&mut mfile.data.borrow_mut());
-        assert_eq!(
-            written,
-            mfile.data.borrow().len() as u32,
-            "written != data.len"
-        );
+        let written = bd.dump(&mut mfile.as_mut());
+        assert_eq!(written, mfile.as_ref().len() as u32, "written != data.len");
 
         mfile.sync()?;
 
@@ -757,8 +753,7 @@ mod tests {
 
         tbl.inner.borrow().verify_checksum().unwrap();
 
-        tbl.inner.borrow_mut().mmap_file.data.borrow_mut()[128..228]
-            .fill_with(|| rand::random::<u8>());
+        tbl.inner.borrow_mut().mmap_file.as_mut()[128..228].fill_with(|| rand::random::<u8>());
 
         assert!(tbl.inner.borrow().verify_checksum().is_err());
     }

@@ -5,10 +5,9 @@ use std::{
     sync::atomic,
 };
 
-use crate::{memtable::LogFile, option::Options};
+use crate::{memtable::LogFile, option::Options, util::MEM_ORDERING};
 use anyhow::{anyhow, bail, Result};
 use log::info;
-use std::sync::atomic::Ordering::Relaxed;
 use tokio::fs::read_dir;
 
 use super::discard::DiscardStats;
@@ -52,7 +51,7 @@ impl ValueLog {
             .map_err(|e| anyhow!("Unable to open log file: {:?}. Error={}", path, e))?;
             assert!(!is_new);
 
-            if log_file.size.load(Relaxed) == VLOG_HEADER_SIZE && fid != max_fid {
+            if log_file.size.load(MEM_ORDERING) == VLOG_HEADER_SIZE && fid != max_fid {
                 info!("Deleting empty file: {}", log_file.path);
                 log_file.delete()?;
                 continue;
@@ -105,7 +104,8 @@ impl ValueLog {
         assert!(is_new);
         self.files_map.insert(fid, log_file);
         self.max_fid = fid;
-        self.writeable_log_offset.store(VLOG_HEADER_SIZE, Relaxed);
+        self.writeable_log_offset
+            .store(VLOG_HEADER_SIZE, MEM_ORDERING);
         self.num_entries_written = 0;
 
         Ok(())

@@ -5,7 +5,6 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic,
-    sync::atomic::Ordering::Relaxed,
 };
 
 use anyhow::{anyhow, bail, Result};
@@ -22,6 +21,7 @@ use crate::{
     util::{
         file::{open_mmap_file, MmapFile},
         kv::parse_ts,
+        MEM_ORDERING,
     },
     value::ValueStruct,
     vlog::VLOG_HEADER_SIZE,
@@ -44,7 +44,7 @@ impl Display for MemTable {
             "(sl: {}, wal: {}, max_version: {}, buf: [u8;{}])",
             self.sl.len(),
             self.wal,
-            self.max_version.load(Relaxed),
+            self.max_version.load(MEM_ORDERING),
             self.buf.len()
         )
     }
@@ -80,12 +80,12 @@ impl MemTable {
         let end_off = self.wal.iterate(0, self.replay_func())?;
 
         let read_only = false;
-        if end_off < self.wal.size.load(Relaxed) && read_only {
+        if end_off < self.wal.size.load(MEM_ORDERING) && read_only {
             bail!(
                 "{}, end offset {} < size {}",
                 Error::TruncateNeeded,
                 end_off,
-                self.wal.size.load(Relaxed)
+                self.wal.size.load(MEM_ORDERING)
             )
         }
 
@@ -108,8 +108,8 @@ impl MemTable {
                 first = false;
             }
             let ts = parse_ts(&e.key);
-            if ts > self.max_version.load(Relaxed) {
-                self.max_version.store(ts, Relaxed);
+            if ts > self.max_version.load(MEM_ORDERING) {
+                self.max_version.store(ts, MEM_ORDERING);
             }
             let v = ValueStruct {
                 meta: e.meta,
@@ -160,23 +160,22 @@ impl LogFile {
                 let _ = remove_file(path).await;
                 bail!(e)
             }
-            lf.size.store(VLOG_HEADER_SIZE, Relaxed);
+            lf.size.store(VLOG_HEADER_SIZE, MEM_ORDERING);
         }
         lf.size
-            .store(lf.mmap_file.data.borrow().len() as u32, Relaxed);
+            .store(lf.mmap_file.as_ref().len() as u32, MEM_ORDERING);
 
-        if lf.size.load(Relaxed) < VLOG_HEADER_SIZE {
+        if lf.size.load(MEM_ORDERING) < VLOG_HEADER_SIZE {
             return Ok((lf, false));
         }
 
         let mut buf = [0; 8];
-        buf.copy_from_slice(&(lf.mmap_file.data.borrow()[..8]));
+        buf.copy_from_slice(&(lf.mmap_file.as_ref()[..8]));
         if u64::from_be_bytes(buf) != 0 {
             bail!("Unsupport encryption yet, found keyid not 0")
         }
         lf.base_iv.resize(12, 0);
-        lf.base_iv
-            .copy_from_slice(&(lf.mmap_file.data.borrow()[8..20]));
+        lf.base_iv.copy_from_slice(&(lf.mmap_file.as_ref()[8..20]));
 
         return Ok((lf, is_new_file));
     }
@@ -192,7 +191,7 @@ impl LogFile {
         buf[..8].copy_from_slice(&u64::to_be_bytes(0));
         let mut rng = rand::thread_rng();
         buf[8..].shuffle(&mut rng);
-        self.mmap_file.data.borrow_mut()[..20].copy_from_slice(&buf);
+        self.mmap_file.as_mut()[..20].copy_from_slice(&buf);
 
         self.zero_next_entry();
 
@@ -203,14 +202,14 @@ impl LogFile {
         let start = self.write_at as usize;
         let mut end = start + MAX_HEADER_SIZE;
 
-        if end > self.mmap_file.data.borrow().len() {
-            end = self.mmap_file.data.borrow().len();
+        if end > self.mmap_file.as_ref().len() {
+            end = self.mmap_file.as_ref().len();
         }
         if end - start <= 0 {
             return;
         }
 
-        self.mmap_file.data.borrow_mut()[start..end].fill(0_u8);
+        self.mmap_file.as_mut()[start..end].fill(0_u8);
     }
 
     pub(crate) fn iterate<F>(&self, offset: u32, mut f: F) -> Result<u32>
@@ -364,7 +363,7 @@ impl LogFile {
         {
             return Ok(());
         }
-        self.size.store(offset, Relaxed);
+        self.size.store(offset, MEM_ORDERING);
         self.mmap_file.truncate(offset as u64)
     }
 
@@ -381,7 +380,7 @@ impl Display for LogFile {
             self.mmap_file,
             self.path,
             self.fid,
-            self.size.load(Relaxed),
+            self.size.load(MEM_ORDERING),
             self.base_iv.len(),
             self.write_at
         )
