@@ -1,6 +1,4 @@
-#![feature(
-    slice_as_chunks,
-)]
+#![feature(slice_as_chunks)]
 
 pub mod db;
 pub mod error;
@@ -19,6 +17,7 @@ mod test;
 mod util;
 mod value;
 mod vlog;
+mod write;
 
 mod pb {
     include!(concat!(env!("OUT_DIR"), "/badgerpb4.rs"));

@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     fmt::Display,
     io::{ErrorKind, Read},
-    ops::DerefMut,
     path::{Path, PathBuf},
     rc::Rc,
     slice,
@@ -11,13 +10,13 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use log::error;
 
-pub fn sync_dir<P: AsRef<Path>>(dir: P) -> Result<()> {
+pub(crate) fn sync_dir<P: AsRef<Path>>(dir: P) -> Result<()> {
     std::fs::File::open(&dir)?
         .sync_all()
         .map_err(|e| anyhow!("Sync {:?} error: {}", dir.as_ref(), e))
 }
 
-pub struct MmapFile {
+pub(crate) struct MmapFile {
     pub data: Rc<RefCell<memmap2::MmapMut>>,
     pub file: std::sync::Mutex<Filex>,
 }
@@ -41,6 +40,11 @@ impl MmapFile {
             data,
             file: std::sync::Mutex::new(file),
         }
+    }
+
+    pub(crate) fn write_slice(&mut self, offset: usize, data: &[u8]) -> Result<()> {
+        self.as_mut()[offset..offset + data.len()].copy_from_slice(data);
+        Ok(())
     }
 
     pub fn read(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
@@ -242,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn test_mmap_read_write() {
         let path = format!("/tmp/mmaptest-{}", rand::random::<u64>());
-        let (mfile, new) = open_mmap_file(
+        let (mut mfile, new) = open_mmap_file(
             path.clone(),
             &std::fs::OpenOptions::new()
                 .read(true)
@@ -259,7 +263,7 @@ mod tests {
             buf[i] = i as u8;
         }
 
-        mfile.data.borrow_mut()[..1024].copy_from_slice(&buf[..]);
+        mfile.write_slice(0, &buf).unwrap();
         mfile.sync().unwrap();
 
         let (mfile, new) = open_mmap_file(
@@ -274,6 +278,6 @@ mod tests {
         .unwrap();
         assert!(!new);
 
-        assert_eq!(mfile.data.borrow()[..1024], buf[..]);
+        assert_eq!(mfile.as_ref()[..1024], buf[..]);
     }
 }

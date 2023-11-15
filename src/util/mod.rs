@@ -6,10 +6,16 @@ pub(crate) mod table;
 use std::{collections::HashMap, fs, path::Path, sync::atomic::Ordering};
 
 use anyhow::{bail, Result};
+use lazy_static::lazy_static;
 
 use crate::{manifest::CASTAGNOLI, pb};
 
 pub(crate) const MEM_ORDERING: Ordering = Ordering::SeqCst;
+
+lazy_static! {
+    pub(crate) static ref DEFAULT_PAGE_SIZE: usize =
+        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+}
 
 pub fn get_id_map<P: AsRef<Path>>(dir: P) -> Result<HashMap<u64, ()>> {
     let m = fs::read_dir(dir)?

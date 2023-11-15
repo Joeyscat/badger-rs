@@ -159,7 +159,7 @@ impl DiscardStatsInner {
     }
 
     fn set(&mut self, offset: usize, value: u64) -> Result<()> {
-        self.mfile.as_mut()[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+        self.mfile.write_slice(offset, &value.to_be_bytes())?;
         Ok(())
     }
 
@@ -218,7 +218,7 @@ mod tests {
         opt.dir = test_dir.path().to_str().unwrap().to_string();
 
         let mut db = DB::open(opt.clone()).await.unwrap();
-        let ds = &mut db.vlog.discard_stats;
+        let ds = db.vlog.get_discard_stats_mut();
 
         ds.update(1, 1).unwrap();
         ds.update(2, 1).unwrap();
@@ -227,7 +227,7 @@ mod tests {
         drop(db);
 
         let mut dbs = DB::open(opt).await.unwrap();
-        let ds2 = &mut dbs.vlog.discard_stats;
+        let ds2 = &mut dbs.vlog.get_discard_stats_mut();
 
         assert_eq!(0, ds2.update(1, 0).unwrap());
         assert_eq!(1, ds2.update(2, 0).unwrap());

@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     fmt::Display,
     io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read},
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic,
@@ -102,24 +103,24 @@ impl MemTable {
             if first {
                 debug!(
                     "First key={}",
-                    String::from_utf8(e.key.to_vec())
+                    String::from_utf8(e.get_key().to_vec())
                         .map_or("UNKOWN(decode utf8 fail)".to_string(), |s| s),
                 );
                 first = false;
             }
-            let ts = parse_ts(&e.key);
+            let ts = parse_ts(e.get_key());
             if ts > self.max_version.load(MEM_ORDERING) {
                 self.max_version.store(ts, MEM_ORDERING);
             }
             let v = ValueStruct {
-                meta: e.meta,
-                user_meta: e.user_meta,
-                expires_at: e.expires_at,
-                value: e.value,
+                meta: e.get_meta(),
+                user_meta: e.get_user_meta(),
+                expires_at: e.get_expires_at(),
+                value: e.get_value(),
                 version: 0,
             };
 
-            self.sl.insert(e.key, v);
+            self.sl.insert(e.get_key().to_vec(), v);
             Ok(())
         }
     }
@@ -127,12 +128,26 @@ impl MemTable {
 
 pub(crate) struct LogFile {
     mmap_file: MmapFile,
-    pub(crate) path: String,
+    path: String,
     fid: u32,
-    pub(crate) size: atomic::AtomicU32,
+    size: atomic::AtomicU32,
     // data_key: pb::DataKey,
     base_iv: Vec<u8>,
     write_at: u32,
+}
+
+impl Deref for LogFile {
+    type Target = MmapFile;
+
+    fn deref(&self) -> &Self::Target {
+        &self.mmap_file
+    }
+}
+
+impl DerefMut for LogFile {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.mmap_file
+    }
 }
 
 impl LogFile {
@@ -191,7 +206,7 @@ impl LogFile {
         buf[..8].copy_from_slice(&u64::to_be_bytes(0));
         let mut rng = rand::thread_rng();
         buf[8..].shuffle(&mut rng);
-        self.mmap_file.as_mut()[..20].copy_from_slice(&buf);
+        self.mmap_file.write_slice(0, &buf)?;
 
         self.zero_next_entry();
 
@@ -231,7 +246,7 @@ impl LogFile {
 
         loop {
             let ent = match self.entry(Rc::clone(&reader), offset as usize) {
-                Ok(ent) if ent.key.is_empty() => break,
+                Ok(ent) if ent.get_key().is_empty() => break,
                 Ok(ent) => ent,
                 // We have not reached the end of the file buf the entry we read is
                 // zero. This happens because we have truncated the file and zero'ed
@@ -242,16 +257,14 @@ impl LogFile {
                 Err(e) => bail!(e),
             };
 
-            let vp = ValuePointer {
-                fid: self.fid,
-                offset: ent.offset,
-                len: ent.header_len + (ent.key.len() + ent.value.len() + CRC_SIZE) as u32,
-            };
-            offset += vp.len;
+            let ent_len = ent.get_header_len()
+                + (ent.get_key().len() + ent.get_value().len() + CRC_SIZE) as u32;
+            let vp = ValuePointer::new(self.fid, ent_len, ent.get_offset());
+            offset += vp.len();
 
-            match ent.meta {
+            match ent.get_meta() {
                 meta if meta & BIT_TXN > 0 => {
-                    let txn_ts = parse_ts(&ent.key);
+                    let txn_ts = parse_ts(ent.get_key());
                     if last_commit == 0 {
                         last_commit = txn_ts;
                     }
@@ -263,7 +276,7 @@ impl LogFile {
                 }
 
                 meta if meta & BIT_FIN_TXN > 0 => {
-                    let txn_ts: u64 = match String::from_utf8(ent.value.to_vec()) {
+                    let txn_ts: u64 = match String::from_utf8(ent.get_value().to_vec()) {
                         Ok(s) => match s.parse() {
                             Ok(i) => i,
                             _ => break,
@@ -336,18 +349,14 @@ impl LogFile {
             bail!(Error::VLogTruncate);
         }
 
-        let e = Entry {
-            key: Vec::from(k),
-            value: Vec::from(v).into(),
-            expires_at: header.expires_at,
-            offset: offset as u32,
-            user_meta: header.user_meta,
-            meta: header.meta,
-            header_len: header_len as u32,
-            val_threshold: 0,
-            version: 0,
-        };
-        Ok(e)
+        let mut ent = Entry::new(Vec::from(k), Vec::from(v).into());
+        ent.set_expires_at(header.expires_at);
+        ent.set_offset(offset as u32);
+        ent.set_header_len(header_len as u32);
+        ent.set_meta(header.meta);
+        ent.set_user_meta(header.user_meta);
+
+        Ok(ent)
     }
 
     pub(crate) async fn truncate(&mut self, offset: u32) -> Result<()> {
@@ -367,8 +376,30 @@ impl LogFile {
         self.mmap_file.truncate(offset as u64)
     }
 
-    pub fn delete(self) -> Result<()> {
+    pub(crate) async fn donw_writing(&mut self, offset: u32) -> Result<()> {
+        self.sync()?;
+
+        self.truncate(offset).await
+    }
+
+    pub(crate) fn delete(self) -> Result<()> {
         self.mmap_file.delete()
+    }
+
+    pub(crate) fn get_fid(&self) -> u32 {
+        self.fid
+    }
+
+    pub(crate) fn get_size(&self) -> u32 {
+        self.size.load(MEM_ORDERING)
+    }
+
+    pub(crate) fn set_size(&self, s: u32) {
+        self.size.store(s, MEM_ORDERING);
+    }
+
+    pub(crate) fn get_path(&self) -> &str {
+        &self.path
     }
 }
 

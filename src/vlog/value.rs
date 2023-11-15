@@ -1,14 +1,14 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     path::{Path, PathBuf},
-    sync::atomic,
+    sync::{atomic, Arc},
 };
 
 use crate::{memtable::LogFile, option::Options, util::MEM_ORDERING};
 use anyhow::{anyhow, bail, Result};
 use log::info;
-use tokio::fs::read_dir;
+use tokio::{fs::read_dir, sync::RwLock};
 
 use super::discard::DiscardStats;
 
@@ -22,13 +22,13 @@ pub const VLOG_FILE_EXT: &str = ".vlog";
 pub const VLOG_HEADER_SIZE: u32 = 20;
 
 pub(crate) struct ValueLog {
-    files_map: HashMap<u32, LogFile>,
-    max_fid: u32,
+    files_map: RwLock<BTreeMap<u32, Arc<RwLock<LogFile>>>>,
+    max_fid: atomic::AtomicU32,
     files_tobe_deleted: Vec<u32>,
-    pub(crate) discard_stats: DiscardStats,
+    discard_stats: DiscardStats,
 
     writeable_log_offset: atomic::AtomicU32,
-    num_entries_written: u32,
+    num_entries_written: atomic::AtomicU32,
     opt: Options,
 }
 
@@ -36,9 +36,9 @@ impl ValueLog {
     pub(crate) async fn open(opt: Options) -> Result<ValueLog> {
         let discard_stats: DiscardStats = DiscardStats::new(&opt.dir).await?;
         let (fids, max_fid) = Self::populate_files_map(&opt.dir).await?;
-        let fids = Self::sort_fids(&vec![], &fids);
 
-        let mut files_map = HashMap::new();
+        let mut files_map = BTreeMap::new();
+        let fids = Self::sort_fids(&vec![], &fids);
         for fid in fids {
             let path = Self::fpath(&opt.dir, fid);
             let (log_file, is_new) = LogFile::open(
@@ -51,37 +51,37 @@ impl ValueLog {
             .map_err(|e| anyhow!("Unable to open log file: {:?}. Error={}", path, e))?;
             assert!(!is_new);
 
-            if log_file.size.load(MEM_ORDERING) == VLOG_HEADER_SIZE && fid != max_fid {
-                info!("Deleting empty file: {}", log_file.path);
+            if log_file.get_size() == VLOG_HEADER_SIZE && fid != max_fid {
+                info!("Deleting empty file: {}", log_file.get_path());
                 log_file.delete()?;
                 continue;
             }
 
-            files_map.insert(fid, log_file);
+            files_map.insert(fid, Arc::new(RwLock::new(log_file)));
         }
-        let mut value_log = ValueLog {
-            files_map,
-            max_fid,
+        let files_map_len = files_map.len();
+        let value_log = ValueLog {
+            files_map: RwLock::new(files_map),
+            max_fid: max_fid.into(),
             files_tobe_deleted: vec![],
             discard_stats,
-            writeable_log_offset: Default::default(),
-            num_entries_written: 0,
+            writeable_log_offset: 0.into(),
+            num_entries_written: 0.into(),
             opt,
         };
 
-        if value_log.files_map.len() == 0 {
+        if files_map_len == 0 {
             value_log
                 .create_vlog_file()
                 .await
                 .map_err(|e| anyhow!("Error while creating log file in ValueLog::open: {}", e))?;
         }
 
-        let last = value_log
-            .files_map
-            .get_mut(&value_log.max_fid)
-            .expect("invalid fid");
-        let last_off = last.iterate(VLOG_HEADER_SIZE, |_, _| Ok(()))?;
-        last.truncate(last_off).await?;
+        let last = value_log.get_latest_logfile().await?;
+        let mut last_w = last.write().await;
+        let last_off = last_w.iterate(VLOG_HEADER_SIZE, |_, _| Ok(()))?;
+        last_w.truncate(last_off).await?;
+        drop(last_w);
 
         value_log
             .create_vlog_file()
@@ -91,8 +91,8 @@ impl ValueLog {
         Ok(value_log)
     }
 
-    async fn create_vlog_file(&mut self) -> Result<()> {
-        let fid = self.max_fid + 1;
+    pub(crate) async fn create_vlog_file(&self) -> Result<Arc<RwLock<LogFile>>> {
+        let fid = self.max_fid.fetch_add(1, MEM_ORDERING) + 1;
         let path = Self::fpath(&self.opt.dir, fid);
         let (log_file, is_new) = LogFile::open(
             path,
@@ -102,13 +102,13 @@ impl ValueLog {
         )
         .await?;
         assert!(is_new);
-        self.files_map.insert(fid, log_file);
-        self.max_fid = fid;
+        let log_file = Arc::new(RwLock::new(log_file));
+        self.files_map.write().await.insert(fid, log_file.clone());
         self.writeable_log_offset
             .store(VLOG_HEADER_SIZE, MEM_ORDERING);
-        self.num_entries_written = 0;
+        self.num_entries_written.store(0, MEM_ORDERING);
 
-        Ok(())
+        Ok(log_file)
     }
 
     // return file id vector, and max file id
@@ -153,5 +153,47 @@ impl ValueLog {
 
     fn fpath(dir: &str, fid: u32) -> PathBuf {
         Path::new(dir).join(format!("{:06}.vlog", fid))
+    }
+
+    pub(crate) async fn get_latest_logfile(&self) -> Result<Arc<RwLock<LogFile>>> {
+        Ok(self
+            .files_map
+            .read()
+            .await
+            .get(&self.max_fid.load(MEM_ORDERING))
+            .expect("get_latest_logfile failed")
+            .clone())
+    }
+
+    pub(crate) fn woffset(&self) -> u32 {
+        self.writeable_log_offset.load(MEM_ORDERING)
+    }
+
+    pub(crate) fn get_opt(&self) -> &Options {
+        &self.opt
+    }
+
+    pub(crate) fn get_writeable_log_offset(&self) -> u32 {
+        self.writeable_log_offset.load(MEM_ORDERING)
+    }
+
+    pub(crate) fn writeable_log_offset_fetchadd(&self, s: u32) -> u32 {
+        self.writeable_log_offset.fetch_add(s, MEM_ORDERING)
+    }
+
+    pub(crate) fn get_num_entries_written(&self) -> u32 {
+        self.num_entries_written.load(MEM_ORDERING)
+    }
+
+    pub(crate) fn num_entries_written_fetchadd(&self, n: u32) -> u32 {
+        self.num_entries_written.fetch_add(n, MEM_ORDERING)
+    }
+
+    pub(crate) fn get_value_threshold(&self) -> u32 {
+        self.opt.value_threshold
+    }
+
+    pub(crate) fn get_discard_stats_mut(&mut self) -> &mut DiscardStats {
+        &mut self.discard_stats
     }
 }
