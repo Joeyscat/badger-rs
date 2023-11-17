@@ -1,10 +1,9 @@
 use std::{
-    cell::RefCell,
     fmt::Display,
     io::{ErrorKind, Read},
     path::{Path, PathBuf},
-    rc::Rc,
     slice,
+    sync::{Arc, RwLock},
 };
 
 use anyhow::{anyhow, bail, Result};
@@ -17,25 +16,26 @@ pub(crate) fn sync_dir<P: AsRef<Path>>(dir: P) -> Result<()> {
 }
 
 pub(crate) struct MmapFile {
-    pub data: Rc<RefCell<memmap2::MmapMut>>,
+    pub data: Arc<RwLock<memmap2::MmapMut>>,
     pub file: std::sync::Mutex<Filex>,
 }
 
 impl AsRef<[u8]> for MmapFile {
     fn as_ref(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.data.borrow().as_ptr() as _, self.data.borrow().len()) }
+        let data = self.data.read().unwrap();
+        unsafe { slice::from_raw_parts(data.as_ptr() as _, data.len()) }
     }
 }
 
 impl AsMut<[u8]> for MmapFile {
     fn as_mut(&mut self) -> &mut [u8] {
-        let l = self.data.borrow().len();
-        unsafe { slice::from_raw_parts_mut(self.data.borrow_mut().as_mut_ptr() as _, l) }
+        let mut data = self.data.write().unwrap();
+        unsafe { slice::from_raw_parts_mut(data.as_mut_ptr() as _, data.len()) }
     }
 }
 
 impl MmapFile {
-    pub fn new(data: Rc<RefCell<memmap2::MmapMut>>, file: Filex) -> Self {
+    pub fn new(data: Arc<RwLock<memmap2::MmapMut>>, file: Filex) -> Self {
         Self {
             data,
             file: std::sync::Mutex::new(file),
@@ -48,7 +48,7 @@ impl MmapFile {
     }
 
     pub fn read(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
-        let d = self.data.borrow();
+        let d = self.data.read().unwrap();
         if offset + size > d.len() {
             return Err(anyhow::Error::new(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -60,14 +60,15 @@ impl MmapFile {
 
     pub fn new_reader(&self, offset: usize) -> MmapReader {
         MmapReader {
-            data: Rc::clone(&self.data),
+            data: Arc::clone(&self.data),
             offset,
         }
     }
 
     pub fn sync(&self) -> Result<()> {
         self.data
-            .borrow_mut()
+            .write()
+            .unwrap()
             .flush()
             .map_err(|e| anyhow!("Flush mmapfile error: {}", e))
     }
@@ -83,7 +84,8 @@ impl MmapFile {
 
         unsafe {
             self.data
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .remap(
                     max_size as usize,
                     memmap2::RemapOptions::new().may_move(true),
@@ -136,7 +138,11 @@ impl MmapFile {
 
 impl Display for MmapFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(data: [u8;{}], file: _)", self.data.borrow().len(),)
+        write!(
+            f,
+            "(data: [u8;{}], file: _)",
+            self.data.read().unwrap().len(),
+        )
     }
 }
 
@@ -184,26 +190,26 @@ pub async fn open_mmap_file<P: AsRef<Path>>(
     }
 
     Ok((
-        MmapFile::new(Rc::new(RefCell::new(mmap_mut)), Filex::new(fd, path)),
+        MmapFile::new(Arc::new(RwLock::new(mmap_mut)), Filex::new(fd, path)),
         is_new_file,
     ))
 }
 
 pub struct MmapReader {
-    data: Rc<RefCell<memmap2::MmapMut>>,
+    data: Arc<RwLock<memmap2::MmapMut>>,
     offset: usize,
 }
 
 impl Read for MmapReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.offset > self.data.borrow().len() {
+        if self.offset > self.data.read().unwrap().len() {
             return Err(std::io::Error::from(ErrorKind::UnexpectedEof));
         }
 
-        let bytes_to_read = std::cmp::min(buf.len(), self.data.borrow().len() - self.offset);
+        let bytes_to_read = std::cmp::min(buf.len(), self.data.read().unwrap().len() - self.offset);
 
         buf[..bytes_to_read]
-            .copy_from_slice(&self.data.borrow_mut()[self.offset..self.offset + bytes_to_read]);
+            .copy_from_slice(&self.data.write().unwrap()[self.offset..self.offset + bytes_to_read]);
         self.offset += bytes_to_read;
 
         Ok(bytes_to_read)

@@ -20,7 +20,7 @@ impl DiscardStats {
         Ok(DiscardStats(Mutex::new(DiscardStatsInner::new(dir).await?)))
     }
 
-    pub(crate) fn update(&mut self, fid: u64, discard: i64) -> Result<i64> {
+    pub(crate) fn update(&self, fid: u64, discard: i64) -> Result<i64> {
         self.0.lock().unwrap().update(fid, discard)
     }
 
@@ -217,8 +217,8 @@ mod tests {
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
 
-        let mut db = DB::open(opt.clone()).await.unwrap();
-        let ds = db.vlog.get_discard_stats_mut();
+        let db = DB::open(opt.clone()).await.unwrap();
+        let ds = db.vlog.get_discard_stats();
 
         ds.update(1, 1).unwrap();
         ds.update(2, 1).unwrap();
@@ -226,8 +226,8 @@ mod tests {
         // db.close().unwrap();
         drop(db);
 
-        let mut dbs = DB::open(opt).await.unwrap();
-        let ds2 = &mut dbs.vlog.get_discard_stats_mut();
+        let dbs = DB::open(opt).await.unwrap();
+        let ds2 = dbs.vlog.get_discard_stats();
 
         assert_eq!(0, ds2.update(1, 0).unwrap());
         assert_eq!(1, ds2.update(2, 0).unwrap());

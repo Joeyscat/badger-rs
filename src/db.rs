@@ -1,8 +1,18 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    ops::Deref,
+    sync::{atomic, Arc},
+};
 
 use anyhow::{anyhow, bail, Result};
 use log::{error, info};
-use tokio::{fs::read_dir, sync::Mutex};
+use tokio::{
+    fs::read_dir,
+    spawn,
+    sync::{
+        mpsc::{self, Sender},
+        Mutex, RwLock,
+    },
+};
 
 use crate::{
     error::Error,
@@ -11,10 +21,22 @@ use crate::{
     memtable::{open_mem_table, MemTable, MEM_FILE_EXT},
     option::Options,
     txn::Txn,
+    util::MEM_ORDERING,
     vlog::ValueLog,
+    write::WriteReq,
 };
 
-pub struct DB {
+pub struct DB(Arc<DBInner>);
+
+impl Deref for DB {
+    type Target = DBInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub struct DBInner {
     // dir_lock_guard: x,
     // value_dir_guard: x,
 
@@ -22,61 +44,70 @@ pub struct DB {
     mt: Option<Mutex<MemTable>>,
     imm: Mutex<Vec<MemTable>>,
 
-    next_mem_fid: u32,
+    next_mem_fid: atomic::AtomicU32,
 
-    opt: Options,
-    manifest: Rc<RefCell<ManifestFile>>,
+    pub(crate) opt: Options,
+    manifest: Arc<RwLock<ManifestFile>>,
     lc: LevelsController,
     pub(crate) vlog: ValueLog,
-    // write_ch: Receiver<Request>,
+    pub(crate) write_tx: Sender<WriteReq>,
     // flush_ch: Receiver<MemTable>,
     // close_once: std::sync::Once,
-
-    // block_writes: atomic::AtomicU32,
-    // is_closed: atomic::AtomicU32,
+    pub(crate) block_writes: atomic::AtomicBool,
+    // is_closed: atomic::AtomicBool,
 }
 
 impl DB {
-    pub async fn open(opt: Options) -> Result<Self> {
+    pub async fn open(opt: Options) -> Result<DB> {
         Self::check_options(&opt)?;
 
         let mf = open_or_create_manifest_file(&opt).await?;
-        let lc = LevelsController::new(
-            opt.clone(),
-            Rc::clone(&Rc::new(mf.manifest.lock().await.clone())),
-        )
-        .await?;
-        let mf = Rc::new(RefCell::new(mf));
+        let mm = mf.manifest.lock().await;
+        let lc = LevelsController::new(opt.clone(), &mm).await?;
+        drop(mm);
+        let mf = Arc::new(RwLock::new(mf));
 
         let vlog = ValueLog::open(opt.clone()).await?;
 
-        let mut db = DB {
+        let (write_tx, write_rx) = mpsc::channel(1000);
+
+        let mut inner = DBInner {
             mt: None,
             lc,
             imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
-            next_mem_fid: 0,
+            next_mem_fid: Default::default(),
             opt: opt.clone(),
-            manifest: Rc::clone(&mf),
+            manifest: Arc::clone(&mf),
             vlog,
+            write_tx,
             // flush_ch: todo!(),
             // close_once: todo!(),
-            // block_writes: todo!(),
+            block_writes: false.into(),
             // is_closed: todo!(),
         };
 
-        db.open_mem_tables()
+        inner
+            .open_mem_tables()
             .await
             .map_err(|e| anyhow!("Opening memtables error: {}", e))?;
 
-        db.mt = Some(Mutex::new(
-            db.new_mem_table()
+        inner.mt = Some(Mutex::new(
+            inner
+                .new_mem_table()
                 .await
                 .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
         ));
 
+        let inner = Arc::new(inner);
+        let inner_cloned = Arc::clone(&inner);
+
+        spawn(async move {
+            inner_cloned.do_writes(write_rx).await;
+        });
+
         // TODO flush memtable
 
-        Ok(db)
+        Ok(DB(inner))
     }
 
     fn check_options(opt: &Options) -> Result<()> {
@@ -85,7 +116,9 @@ impl DB {
         }
         Ok(())
     }
+}
 
+impl DBInner {
     pub fn new_transaction(&self, _update: bool) -> Result<Txn> {
         unimplemented!()
     }
@@ -103,8 +136,8 @@ impl DB {
     }
 }
 
-impl DB {
-    async fn open_mem_tables(&mut self) -> Result<()> {
+impl DBInner {
+    async fn open_mem_tables(&self) -> Result<()> {
         let dir = self.opt.dir.clone();
         let mut entries = read_dir(dir.as_str()).await?;
         let mut fids = Vec::new();
@@ -138,39 +171,45 @@ impl DB {
                 mt.wal.delete()?;
                 continue;
             }
-            self.imm.get_mut().push(mt);
+            self.imm.lock().await.push(mt);
         }
         if !fids.is_empty() {
-            self.next_mem_fid = fids
-                .last()
-                .expect("Fetching last fid from a non empty vector")
-                .to_owned();
+            self.next_mem_fid.store(
+                fids.last()
+                    .expect("Fetching last fid from a non empty vector")
+                    .to_owned(),
+                MEM_ORDERING,
+            );
         }
-        self.next_mem_fid += 1;
+        self.next_mem_fid.fetch_add(1, MEM_ORDERING);
         Ok(())
     }
 
-    async fn new_mem_table(&mut self) -> Result<MemTable> {
+    async fn new_mem_table(&self) -> Result<MemTable> {
         match open_mem_table(
             self.opt.clone(),
-            self.next_mem_fid,
+            self.next_mem_fid.load(MEM_ORDERING),
             std::fs::File::options().read(true).write(true).create(true),
         )
         .await
         {
             Ok((mt, true)) => {
-                self.next_mem_fid += 1;
+                self.next_mem_fid.fetch_add(1, MEM_ORDERING);
                 return Ok(mt);
             }
             Ok((_, _)) => {
                 bail!(
                     "File {:05}{} already exists",
-                    self.next_mem_fid,
+                    self.next_mem_fid.load(MEM_ORDERING),
                     MEM_FILE_EXT
                 )
             }
             Err(e) => {
-                error!("Got error for id({}): {}", self.next_mem_fid, e);
+                error!(
+                    "Got error for id({}): {}",
+                    self.next_mem_fid.load(MEM_ORDERING),
+                    e
+                );
                 bail!("new_mem_table error: {}", e)
             }
         }
@@ -185,6 +224,8 @@ impl DB {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::test::bt;
     use temp_dir::TempDir;
@@ -192,22 +233,22 @@ mod tests {
 
     async fn create_test_db(opt: Options) -> DB {
         let mf = open_or_create_manifest_file(&opt).await.unwrap();
-        let lc = LevelsController::new(
-            opt.clone(),
-            Rc::clone(&&Rc::new(mf.manifest.lock().await.clone())),
-        )
-        .await
-        .unwrap();
-        let manifest = Rc::new(RefCell::new(mf));
-        DB {
+        let mm = mf.manifest.lock().await;
+        let lc = LevelsController::new(opt.clone(), &mm).await.unwrap();
+        drop(mm);
+        let manifest = Arc::new(RwLock::new(mf));
+        let (write_ch_send, _) = mpsc::channel(1000);
+        DB(Arc::new(DBInner {
             mt: None,
             imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
-            next_mem_fid: 0,
+            next_mem_fid: Default::default(),
             manifest,
             lc,
             vlog: ValueLog::open(opt.clone()).await.unwrap(),
+            write_tx: write_ch_send,
+            block_writes: true.into(),
             opt,
-        }
+        }))
     }
 
     #[test(tokio::test)]
@@ -217,8 +258,8 @@ mod tests {
 
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
-        let mut db = create_test_db(opt).await;
-        db.next_mem_fid = 1;
+        let db = create_test_db(opt).await;
+        db.next_mem_fid.store(1, MEM_ORDERING);
 
         let mt = db.new_mem_table().await.unwrap();
 
@@ -232,7 +273,7 @@ mod tests {
 
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
-        let mut db = create_test_db(opt).await;
+        let db = create_test_db(opt).await;
 
         db.open_mem_tables().await.unwrap();
 

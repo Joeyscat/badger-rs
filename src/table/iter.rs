@@ -1,7 +1,8 @@
-use std::{cell::RefCell, rc::Rc};
+use std::sync::Arc;
 
 use anyhow::Result;
 use log::{error, warn};
+use std::sync::RwLock;
 
 use crate::{
     table::{Header, HEADER_SIZE},
@@ -131,13 +132,13 @@ impl IteratorI for BlockIterator {
 }
 
 pub struct Iterator {
-    table: Rc<RefCell<TableInner>>,
+    table: Arc<RwLock<TableInner>>,
     bpos: isize,
     bi: BlockIterator,
 }
 
 impl Iterator {
-    pub(crate) fn new(table: Rc<RefCell<TableInner>>) -> Iterator {
+    pub(crate) fn new(table: Arc<RwLock<TableInner>>) -> Iterator {
         let iter = Iterator {
             table,
             bpos: -1,
@@ -155,11 +156,12 @@ impl Iterator {
     fn seek_from(&mut self, key: &[u8]) -> Result<bool> {
         self.bpos = 0;
 
-        let t = self.table.borrow();
-        let idx = match (0..t.offsets_len())
+        let table = self.table.read().unwrap();
+
+        let idx = match (0..table.offsets_len())
             .collect::<Vec<usize>>()
             .binary_search_by(|idx| {
-                let base_key = t
+                let base_key = table
                     .offsets(*idx)
                     .expect(format!("no block offset found for index: {}", idx).as_str())
                     .key()
@@ -170,12 +172,12 @@ impl Iterator {
             Ok(idx) => idx,
             Err(idx) => idx,
         } as isize;
-        drop(t);
+        drop(table);
         if idx == 0 {
             return self.seek_helper(0, key);
         }
         if !self.seek_helper(idx - 1, key)? {
-            if idx == self.table.borrow().offsets_len() as isize {
+            if idx == self.table.read().unwrap().offsets_len() as isize {
                 return Ok(false);
             }
             return self.seek_helper(idx, key);
@@ -186,7 +188,7 @@ impl Iterator {
 
     fn seek_helper(&mut self, block_idx: isize, key: &[u8]) -> Result<bool> {
         self.bpos = block_idx;
-        let block = self.table.borrow().block(self.bpos)?;
+        let block = self.table.read().unwrap().block(self.bpos)?;
         self.bi = BlockIterator::new(block);
         self.bi.seek(key)
     }
@@ -206,24 +208,26 @@ impl IteratorI for Iterator {
     }
 
     fn seek_to_first(&mut self) -> Result<bool> {
-        self.bpos = self.table.borrow().offsets_len() as isize - 1;
+        let table = self.table.read().unwrap();
+        self.bpos = table.offsets_len() as isize - 1;
         if self.bpos < 0 {
             return Ok(false);
         }
 
         self.bpos = 0;
-        let block = self.table.borrow().block(self.bpos)?;
+        let block = table.block(self.bpos)?;
         self.bi = BlockIterator::new(block);
         self.bi.seek_to_first()
     }
 
     fn seek_to_last(&mut self) -> Result<bool> {
-        self.bpos = self.table.borrow().offsets_len() as isize - 1;
+        let table = self.table.read().unwrap();
+        self.bpos = table.offsets_len() as isize - 1;
         if self.bpos < 0 {
             return Ok(false);
         }
 
-        let block = self.table.borrow().block(self.bpos)?;
+        let block = table.block(self.bpos)?;
         self.bi = BlockIterator::new(block);
         self.bi.seek_to_last()
     }
@@ -234,7 +238,7 @@ impl IteratorI for Iterator {
         }
 
         if self.bi.is_empty() {
-            let block = match self.table.borrow().block(self.bpos) {
+            let block = match self.table.read().unwrap().block(self.bpos) {
                 Ok(b) => b,
                 Err(e) => {
                     error!("read block from table error: {}", e);
@@ -255,12 +259,12 @@ impl IteratorI for Iterator {
     }
 
     fn next(&mut self) -> Result<bool> {
-        if self.bpos >= self.table.borrow().offsets_len() as isize {
+        if self.bpos >= self.table.read().unwrap().offsets_len() as isize {
             return Ok(false);
         }
 
         if self.bi.is_empty() {
-            let block = match self.table.borrow().block(self.bpos) {
+            let block = match self.table.read().unwrap().block(self.bpos) {
                 Ok(b) => b,
                 Err(e) => {
                     warn!("read block from table error: {}", e);
@@ -290,7 +294,7 @@ impl IteratorI for Iterator {
 
     fn valid(&self) -> Result<bool> {
         Ok(self.bpos >= 0
-            && self.bpos < self.table.borrow().offsets_len() as isize
+            && self.bpos < self.table.read().unwrap().offsets_len() as isize
             && self.bi.valid()?)
     }
 }

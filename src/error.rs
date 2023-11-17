@@ -130,4 +130,7 @@ pub enum Error {
 
     #[error("Unexpected end of file")]
     Eof,
+
+    #[error("Lock error: {0}")]
+    Lock(String),
 }

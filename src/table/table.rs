@@ -1,11 +1,12 @@
-use std::cell::RefCell;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use bytes::BytesMut;
 use prost::Message;
+use std::sync::RwLock;
 
+use crate::error::Error;
 use crate::option::{self, ChecksumVerificationMode::*};
 use crate::util::bloom;
 use crate::util::file::open_mmap_file;
@@ -53,7 +54,7 @@ impl Default for Options {
 }
 
 pub(crate) struct Table {
-    inner: Rc<RefCell<TableInner>>,
+    inner: Arc<RwLock<TableInner>>,
 }
 
 impl Table {
@@ -81,13 +82,17 @@ impl Table {
             has_bloom_filter: false,
         };
         let mut table = Table {
-            inner: Rc::new(RefCell::new(inner)),
+            inner: Arc::new(RwLock::new(inner)),
         };
 
         table.init_biggest_and_smallest()?;
 
         if cv_mode == OnTableRead || cv_mode == OnTableAndBlockRead {
-            table.inner.borrow_mut().verify_checksum()?;
+            table
+                .inner
+                .read()
+                .map_err(|e| Error::Lock(e.to_string()))?
+                .verify_checksum()?;
         }
         Ok(table)
     }
@@ -124,29 +129,29 @@ impl Table {
     }
 
     pub(crate) fn id(&self) -> u64 {
-        self.inner.borrow().id
+        self.inner.read().unwrap().id
     }
 
     pub(crate) fn smallest(&self) -> Vec<u8> {
-        self.inner.borrow().smallest.to_vec()
+        self.inner.read().unwrap().smallest.to_vec()
     }
 
     pub(crate) fn biggest(&self) -> Vec<u8> {
-        self.inner.borrow().biggest.to_vec()
+        self.inner.read().unwrap().biggest.to_vec()
     }
 
     pub(crate) fn has_bloom_filter(&self) -> bool {
-        self.inner.borrow().has_bloom_filter
+        self.inner.read().unwrap().has_bloom_filter
     }
 
     pub(crate) fn does_not_have(&self, hash: u32) -> Result<bool> {
-        if !self.inner.borrow().has_bloom_filter {
+        let inner = self.inner.read().unwrap();
+        if !inner.has_bloom_filter {
             return Ok(false);
         }
 
         Ok(!bloom::Filter::may_contain(
-            self.inner
-                .borrow()
+            inner
                 .get_table_index()?
                 .bloom_filter()
                 .ok_or(anyhow!("Get bloom filter bytes error"))?
@@ -156,19 +161,19 @@ impl Table {
     }
 
     fn max_version(&self) -> u64 {
-        self.inner.borrow()._cheap.max_version
+        self.inner.read().unwrap()._cheap.max_version
     }
 
     fn offsets_len(&self) -> usize {
-        self.inner.borrow()._cheap.offsets_len
+        self.inner.read().unwrap()._cheap.offsets_len
     }
 
     pub(crate) fn new_iterator(&self) -> Iterator {
-        Iterator::new(Rc::clone(&self.inner))
+        Iterator::new(Arc::clone(&self.inner))
     }
 
     fn init_biggest_and_smallest(&mut self) -> Result<()> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.inner.write().unwrap();
         inner
             .init_index()
             .map_err(|e| anyhow!("failed to read index: {}", e))?;
@@ -180,12 +185,12 @@ impl Table {
         let mut it = self.new_iterator();
 
         if it.seek_to_last()? {
-            self.inner.borrow_mut().biggest = it.key().to_vec();
+            self.inner.write().unwrap().biggest = it.key().to_vec();
             return Ok(());
         }
         bail!(
             "failed to initialize biggest for table {}",
-            self.inner.borrow().mmap_file.filename()?
+            self.inner.read().unwrap().mmap_file.filename()?
         )
     }
 }
@@ -408,7 +413,7 @@ impl Block {
 
 #[cfg(test)]
 mod tests {
-    use super::{CheapIndex, Table, TableInner};
+    use super::*;
     use crate::{
         option::{self, ChecksumVerificationMode},
         table::builder::Builder,
@@ -424,7 +429,6 @@ mod tests {
         value::ValueStruct,
     };
     use rand::RngCore;
-    use std::{cell::RefCell, rc::Rc, sync::Arc};
     use temp_dir::TempDir;
     use test_log::test;
 
@@ -659,13 +663,12 @@ mod tests {
             opt: opt.into(),
         };
         let t = Table {
-            inner: Rc::new(RefCell::new(table_inner)),
+            inner: Arc::new(RwLock::new(table_inner)),
         };
 
         println!("table: {}", t.id());
-        let mut inner = t.inner.borrow_mut();
+        let mut inner = t.inner.write().unwrap();
         inner.init_index().unwrap();
-
         let index = inner.get_table_index().unwrap();
         println!("key_count: {}", index.key_count());
         println!("max_version: {}", index.max_version());
@@ -719,14 +722,14 @@ mod tests {
         let filepath = test_dir
             .path()
             .join(format!("{}.sst", rand::thread_rng().next_u32()));
-        let tbl = match Table::create(filepath.clone(), builder).await {
+        let t = match Table::create(filepath.clone(), builder).await {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         };
 
-        let offsets_len = tbl.offsets_len();
-        let max_version = tbl.max_version();
-        let mut inner = tbl.inner.borrow_mut();
+        let offsets_len = t.offsets_len();
+        let max_version = t.max_version();
+        let mut inner = t.inner.write().unwrap();
         inner.init_index().unwrap();
         let idx = inner.get_table_index().unwrap();
         assert_eq!(block_count, offsets_len, "block count should be equal");
@@ -740,7 +743,7 @@ mod tests {
         }
         assert_eq!(keys_count, max_version, "max version should be equal");
         drop(inner);
-        drop(tbl);
+        drop(t);
         std::fs::remove_file(filepath).unwrap();
     }
 
@@ -749,13 +752,14 @@ mod tests {
         let mut opts = get_test_options();
         opts.cv_mode = ChecksumVerificationMode::OnTableAndBlockRead;
 
-        let tbl = build_test_table("k", 10000, opts).await.unwrap();
+        let t = build_test_table("k", 10000, opts).await.unwrap();
+        let mut inner = t.inner.write().unwrap();
 
-        tbl.inner.borrow().verify_checksum().unwrap();
+        inner.verify_checksum().unwrap();
 
-        tbl.inner.borrow_mut().mmap_file.as_mut()[128..228].fill_with(|| rand::random::<u8>());
+        inner.mmap_file.as_mut()[128..228].fill_with(|| rand::random::<u8>());
 
-        assert!(tbl.inner.borrow().verify_checksum().is_err());
+        assert!(inner.verify_checksum().is_err());
     }
 
     #[test(tokio::test)]

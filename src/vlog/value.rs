@@ -103,7 +103,10 @@ impl ValueLog {
         .await?;
         assert!(is_new);
         let log_file = Arc::new(RwLock::new(log_file));
-        self.files_map.write().await.insert(fid, log_file.clone());
+        self.files_map
+            .write()
+            .await
+            .insert(fid, Arc::clone(&log_file));
         self.writeable_log_offset
             .store(VLOG_HEADER_SIZE, MEM_ORDERING);
         self.num_entries_written.store(0, MEM_ORDERING);
@@ -156,13 +159,13 @@ impl ValueLog {
     }
 
     pub(crate) async fn get_latest_logfile(&self) -> Result<Arc<RwLock<LogFile>>> {
-        Ok(self
-            .files_map
-            .read()
-            .await
-            .get(&self.max_fid.load(MEM_ORDERING))
-            .expect("get_latest_logfile failed")
-            .clone())
+        Ok(Arc::clone(
+            self.files_map
+                .read()
+                .await
+                .get(&self.max_fid.load(MEM_ORDERING))
+                .expect("get_latest_logfile failed"),
+        ))
     }
 
     pub(crate) fn woffset(&self) -> u32 {
@@ -193,7 +196,7 @@ impl ValueLog {
         self.opt.value_threshold
     }
 
-    pub(crate) fn get_discard_stats_mut(&mut self) -> &mut DiscardStats {
-        &mut self.discard_stats
+    pub(crate) fn get_discard_stats(&self) -> &DiscardStats {
+        &self.discard_stats
     }
 }

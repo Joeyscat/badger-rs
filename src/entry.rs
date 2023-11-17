@@ -158,6 +158,20 @@ impl Entry {
         self.value.len() < self.value_threshold as usize
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn estimate_size_and_set_threshold(&mut self, threshole: u32) -> u32 {
+        if self.value_threshold == 0 {
+            self.value_threshold = threshole;
+        }
+
+        let k = self.key.len();
+        let v = self.value.len();
+        if v < self.value_threshold as usize {
+            return (k + v + 2) as u32; // meta, user_meta
+        }
+        return (k + 12 + 2) as u32; // 12 for value_pointer, 2 for metas.
+    }
+
     pub(crate) fn get_key(&self) -> &Vec<u8> {
         &self.key
     }

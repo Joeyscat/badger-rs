@@ -20,14 +20,13 @@ pub struct LevelsController {
     l0_stalls_ms: AtomicU64,
 
     levels: Vec<LevelHandler>,
-    manifest: Rc<Manifest>,
     opt: Options,
 
     cstatus: CompactStatus,
 }
 
 impl LevelsController {
-    pub async fn new(opt: Options, mf: Rc<Manifest>) -> Result<Self> {
+    pub async fn new(opt: Options, mf: &Manifest) -> Result<Self> {
         assert!(opt.num_level_zero_tables_stall > opt.num_level_zero_tables);
         let mut levels = Vec::with_capacity(opt.max_levels as usize);
         let mut levelsx = Vec::with_capacity(opt.max_levels as usize);
@@ -94,7 +93,6 @@ impl LevelsController {
             next_file_id: (max_file_id + 1).into(),
             l0_stalls_ms: 0.into(),
             levels,
-            manifest: mf,
             opt,
             cstatus: CompactStatus {
                 levels: levelsx,
