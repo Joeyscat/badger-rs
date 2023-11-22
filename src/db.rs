@@ -10,7 +10,7 @@ use tokio::{
     spawn,
     sync::{
         mpsc::{self, Sender},
-        Mutex, RwLock,
+        Mutex, Notify, RwLock,
     },
 };
 
@@ -57,6 +57,12 @@ pub struct DBInner {
     // is_closed: atomic::AtomicBool,
 }
 
+impl Clone for DB {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
 impl DB {
     pub async fn open(opt: Options) -> Result<DB> {
         Self::check_options(&opt)?;
@@ -99,15 +105,15 @@ impl DB {
         ));
 
         let inner = Arc::new(inner);
-        let inner_cloned = Arc::clone(&inner);
+        let db = DB(inner);
 
-        spawn(async move {
-            inner_cloned.do_writes(write_rx).await;
-        });
+        let write_close_send = Arc::new(Notify::new());
+        let write_close_recv = write_close_send.clone();
+        spawn(db.clone().do_writes(write_rx, write_close_recv));
 
         // TODO flush memtable
 
-        Ok(DB(inner))
+        Ok(db)
     }
 
     fn check_options(opt: &Options) -> Result<()> {
