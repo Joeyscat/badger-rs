@@ -1,7 +1,7 @@
 use std::time::{self, Duration};
 
 /// 1MB
-const MAX_VALUE_THRESHOLD: u32 = 1 << 20;
+const MAX_VALUE_THRESHOLD: usize = 1 << 20;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -22,7 +22,7 @@ pub struct Options {
     pub max_levels: u32,
 
     pub v_log_percentile: f64,
-    pub value_threshold: u32,
+    pub value_threshold: usize,
     pub num_memtables: u32,
 
     /// Changing `block_size` across DB runs will not break badger. The block size is

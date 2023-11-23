@@ -1,6 +1,5 @@
-use std::sync::Arc;
-
 use anyhow::Result;
+use bytes::Bytes;
 
 use crate::{
     entry::Entry,
@@ -19,16 +18,16 @@ impl Txn {
         unimplemented!()
     }
 
-    pub async fn set(&mut self, key: Vec<u8>, value: Arc<Vec<u8>>) -> Result<()> {
-        self.set_entry(Entry::new(key, value)).await
+    pub async fn set<B: Into<Bytes>>(&mut self, key: B, value: B) -> Result<()> {
+        self.set_entry(Entry::new(key.into(), value.into())).await
     }
 
-    pub async fn get(&self, _key: Vec<u8>) -> Result<Item> {
+    pub async fn get<B: Into<Bytes>>(&self, _key: B) -> Result<Item> {
         unimplemented!()
     }
 
-    pub async fn delete(&mut self, key: Vec<u8>) -> Result<()> {
-        self.modify(Entry::delete(key)).await
+    pub async fn delete<B: Into<Bytes>>(&mut self, key: B) -> Result<()> {
+        self.modify(Entry::delete(key.into())).await
     }
 
     pub async fn new_iterator(&self, _opt: IteratorOptions) -> Result<Iterator> {

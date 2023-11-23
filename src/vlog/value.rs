@@ -192,7 +192,7 @@ impl ValueLog {
         self.num_entries_written.fetch_add(n, MEM_ORDERING)
     }
 
-    pub(crate) fn get_value_threshold(&self) -> u32 {
+    pub(crate) fn get_value_threshold(&self) -> usize {
         self.opt.value_threshold
     }
 

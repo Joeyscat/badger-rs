@@ -23,7 +23,7 @@ use crate::{
     txn::Txn,
     util::MEM_ORDERING,
     vlog::ValueLog,
-    write::WriteReq,
+    write::{WriteReq, KV_WRITE_CH_CAPACITY},
 };
 
 pub struct DB(Arc<DBInner>);
@@ -41,8 +41,8 @@ pub struct DBInner {
     // value_dir_guard: x,
 
     // closers: closers,
-    mt: Option<Mutex<MemTable>>,
-    imm: Mutex<Vec<MemTable>>,
+    pub(crate) mt: Option<Arc<RwLock<MemTable>>>,
+    pub(crate) imm: RwLock<Vec<Arc<MemTable>>>,
 
     next_mem_fid: atomic::AtomicU32,
 
@@ -51,7 +51,7 @@ pub struct DBInner {
     lc: LevelsController,
     pub(crate) vlog: ValueLog,
     pub(crate) write_tx: Sender<WriteReq>,
-    // flush_ch: Receiver<MemTable>,
+    pub(crate) flush_tx: Sender<Arc<MemTable>>,
     // close_once: std::sync::Once,
     pub(crate) block_writes: atomic::AtomicBool,
     // is_closed: atomic::AtomicBool,
@@ -75,18 +75,19 @@ impl DB {
 
         let vlog = ValueLog::open(opt.clone()).await?;
 
-        let (write_tx, write_rx) = mpsc::channel(1000);
+        let (write_tx, write_rx) = mpsc::channel(KV_WRITE_CH_CAPACITY);
+        let (flush_tx, flush_rx) = mpsc::channel(opt.num_memtables as usize);
 
         let mut inner = DBInner {
             mt: None,
             lc,
-            imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
+            imm: RwLock::new(Vec::with_capacity(opt.num_memtables as usize)),
             next_mem_fid: Default::default(),
             opt: opt.clone(),
             manifest: Arc::clone(&mf),
             vlog,
             write_tx,
-            // flush_ch: todo!(),
+            flush_tx,
             // close_once: todo!(),
             block_writes: false.into(),
             // is_closed: todo!(),
@@ -97,12 +98,12 @@ impl DB {
             .await
             .map_err(|e| anyhow!("Opening memtables error: {}", e))?;
 
-        inner.mt = Some(Mutex::new(
+        inner.mt = Some(Arc::new(RwLock::new(
             inner
                 .new_mem_table()
                 .await
                 .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
-        ));
+        )));
 
         let inner = Arc::new(inner);
         let db = DB(inner);
@@ -177,7 +178,7 @@ impl DBInner {
                 mt.wal.delete()?;
                 continue;
             }
-            self.imm.lock().await.push(mt);
+            self.imm.write().await.push(Arc::new(mt));
         }
         if !fids.is_empty() {
             self.next_mem_fid.store(
@@ -191,7 +192,7 @@ impl DBInner {
         Ok(())
     }
 
-    async fn new_mem_table(&self) -> Result<MemTable> {
+    pub(crate) async fn new_mem_table(&self) -> Result<MemTable> {
         match open_mem_table(
             self.opt.clone(),
             self.next_mem_fid.load(MEM_ORDERING),
@@ -243,15 +244,17 @@ mod tests {
         let lc = LevelsController::new(opt.clone(), &mm).await.unwrap();
         drop(mm);
         let manifest = Arc::new(RwLock::new(mf));
-        let (write_ch_send, _) = mpsc::channel(1000);
+        let (write_tx, _) = mpsc::channel(KV_WRITE_CH_CAPACITY);
+        let (flush_tx, _) = mpsc::channel(opt.num_memtables as usize);
         DB(Arc::new(DBInner {
             mt: None,
-            imm: Mutex::new(Vec::with_capacity(opt.num_memtables as usize)),
+            imm: RwLock::new(Vec::with_capacity(opt.num_memtables as usize)),
             next_mem_fid: Default::default(),
             manifest,
             lc,
             vlog: ValueLog::open(opt.clone()).await.unwrap(),
-            write_tx: write_ch_send,
+            write_tx,
+            flush_tx,
             block_writes: true.into(),
             opt,
         }))
@@ -283,6 +286,6 @@ mod tests {
 
         db.open_mem_tables().await.unwrap();
 
-        println!("{}", &db.imm.lock().await.len());
+        println!("{}", &db.imm.read().await.len());
     }
 }

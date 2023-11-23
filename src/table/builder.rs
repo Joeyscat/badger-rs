@@ -20,32 +20,30 @@ const PADDING: u32 = 256;
 pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<Header>();
 
 #[repr(C)]
+#[derive(Default)]
 pub(crate) struct Header {
     pub overlap: u16,
     pub diff: u16,
 }
 
 impl Header {
-    pub fn encode(&self) -> Vec<u8> {
+    pub(crate) fn encode(&self) -> Vec<u8> {
         unsafe {
-            let header_slice: &[u8] =
-                std::slice::from_raw_parts((self as *const Header) as *const u8, HEADER_SIZE);
-            header_slice.to_vec()
+            let v: &[u8] =
+                std::slice::from_raw_parts((self as *const Self) as *const u8, HEADER_SIZE);
+            v.to_vec()
         }
     }
 
-    pub fn decode(data: &[u8]) -> Header {
+    pub fn decode(data: &[u8]) -> Self {
         assert_eq!(HEADER_SIZE, data.len());
-        let h: Header = Header {
-            overlap: 0,
-            diff: 0,
-        };
+        let s: Self = Default::default();
         unsafe {
-            let header_slice: &mut [u8] =
-                std::slice::from_raw_parts_mut((&h as *const Header) as *mut u8, HEADER_SIZE);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), header_slice.as_mut_ptr(), HEADER_SIZE);
+            let v: &mut [u8] =
+                std::slice::from_raw_parts_mut((&s as *const Self) as *mut u8, HEADER_SIZE);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), v.as_mut_ptr(), HEADER_SIZE);
         }
-        h
+        s
     }
 }
 
@@ -380,7 +378,7 @@ mod tests {
         for i in 0..key_counts {
             builder.add(
                 key_with_ts(format!("{:016x}", i).into(), i as u64),
-                ValueStruct::new(format!("value{:04}", i).into_bytes().into()),
+                ValueStruct::new(format!("value{:04}", i).as_bytes().to_vec()),
                 0,
             );
         }

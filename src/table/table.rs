@@ -706,7 +706,7 @@ mod tests {
         let mut block_count = 0;
         for i in 0..keys_count {
             let k = key_with_ts(format!("{:016x}", i).into(), i + 1);
-            let vs = ValueStruct::new(format!("{}", i).into_bytes().into());
+            let vs = ValueStruct::new(format!("{}", i).as_bytes().to_vec());
 
             if i == 0 {
                 block_first_keys.push(k.clone());
@@ -775,7 +775,7 @@ mod tests {
         for i in 0..N {
             b.add(
                 key_with_ts(format!("foo:{}", i).into_bytes(), i + 1),
-                ValueStruct::new(Arc::new(vec![])),
+                ValueStruct::new(vec![]),
                 0,
             );
         }

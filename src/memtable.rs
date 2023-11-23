@@ -16,7 +16,7 @@ use tokio::fs::remove_file;
 
 use crate::{
     entry::Entry,
-    entry::{HashReader, Header, ValuePointer, BIT_FIN_TXN, BIT_TXN, CRC_SIZE, MAX_HEADER_SIZE},
+    entry::{HashReader, Header, Meta, ValuePointer, CRC_SIZE, MAX_HEADER_SIZE},
     error::Error,
     option::Options,
     util::{
@@ -30,9 +30,9 @@ use crate::{
 
 pub const MEM_FILE_EXT: &str = ".mem";
 
-pub struct MemTable {
-    pub sl: crossbeam_skiplist::SkipMap<Vec<u8>, ValueStruct>,
-    pub wal: LogFile,
+pub(crate) struct MemTable {
+    pub(crate) sl: crossbeam_skiplist::SkipMap<Vec<u8>, ValueStruct>,
+    pub(crate) wal: LogFile,
     max_version: atomic::AtomicU64,
     // opt: Options,
     buf: bytes::BytesMut,
@@ -51,7 +51,7 @@ impl Display for MemTable {
     }
 }
 
-pub async fn open_mem_table(
+pub(crate) async fn open_mem_table(
     opt: Options,
     fid: u32,
     oopt: &std::fs::OpenOptions,
@@ -77,6 +77,18 @@ pub async fn open_mem_table(
 }
 
 impl MemTable {
+    pub(crate) fn sync_wal(&self) -> Result<()> {
+        self.wal.sync()
+    }
+
+    pub(crate) fn is_full(&self) -> bool {
+        todo!()
+    }
+
+    pub(crate) async fn put(&self, ent: &Entry) -> Result<()> {
+        todo!()
+    }
+
     async fn update_skip_list(&mut self) -> Result<()> {
         let end_off = self.wal.iterate(0, self.replay_func())?;
 
@@ -113,10 +125,10 @@ impl MemTable {
                 self.max_version.store(ts, MEM_ORDERING);
             }
             let v = ValueStruct {
-                meta: e.get_meta(),
+                meta: e.get_meta().bits(),
                 user_meta: e.get_user_meta(),
                 expires_at: e.get_expires_at(),
-                value: e.get_value(),
+                value: e.get_value().clone(),
                 version: 0,
             };
 
@@ -263,7 +275,7 @@ impl LogFile {
             offset += vp.len();
 
             match ent.get_meta() {
-                meta if meta & BIT_TXN > 0 => {
+                meta if meta.contains(Meta::TXN) => {
                     let txn_ts = parse_ts(ent.get_key());
                     if last_commit == 0 {
                         last_commit = txn_ts;
@@ -275,7 +287,7 @@ impl LogFile {
                     vptrs.push(vp);
                 }
 
-                meta if meta & BIT_FIN_TXN > 0 => {
+                meta if meta.contains(Meta::FIN_TXN) => {
                     let txn_ts: u64 = match String::from_utf8(ent.get_value().to_vec()) {
                         Ok(s) => match s.parse() {
                             Ok(i) => i,
@@ -338,22 +350,23 @@ impl LogFile {
         };
         let (k, v) = buf.split_at(header.key_len as usize);
 
-        let mut buf = [0; CRC_SIZE];
-        match reader.borrow_mut().read_exact(&mut buf) {
+        let mut bufx = [0; CRC_SIZE];
+        match reader.borrow_mut().read_exact(&mut bufx) {
             Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
             Err(e) => bail!(e),
             _ => {}
         };
-        let crc = u32::from_be_bytes(buf);
+        let crc = u32::from_be_bytes(bufx);
         if crc != tee.sum32() {
             bail!(Error::VLogTruncate);
         }
 
-        let mut ent = Entry::new(Vec::from(k), Vec::from(v).into());
+        // TODO optimize bytes copy
+        let mut ent = Entry::new(k.to_vec().into(), v.to_vec().into());
         ent.set_expires_at(header.expires_at);
         ent.set_offset(offset as u32);
         ent.set_header_len(header_len as u32);
-        ent.set_meta(header.meta);
+        ent.set_meta(Meta::from_bits_retain(header.meta));
         ent.set_user_meta(header.user_meta);
 
         Ok(ent)

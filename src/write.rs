@@ -1,24 +1,25 @@
-use std::{sync::Arc, time::Duration};
+use std::{mem::replace, sync::Arc};
 
 use anyhow::{anyhow, bail, Result};
 use log::{debug, error};
 use tokio::{
     select, spawn,
     sync::{mpsc, oneshot, Notify},
-    time::sleep,
 };
 
 use crate::{
     db::DB,
-    entry::{Entry, ValuePointer},
+    entry::{Entry, Meta, ValuePointer},
     error::Error,
+    memtable::MemTable,
     util::MEM_ORDERING,
 };
 
-const KV_WRITE_CH_CAPACITY: usize = 1000;
+pub(crate) const KV_WRITE_CH_CAPACITY: usize = 1000;
 
 pub(crate) struct WriteReq {
     entries_vptrs: Vec<(Entry, ValuePointer)>,
+    result: Result<()>,
     result_tx: Option<oneshot::Sender<Result<()>>>,
 }
 
@@ -31,6 +32,7 @@ impl WriteReq {
 
         Self {
             entries_vptrs,
+            result: Ok(()),
             result_tx: Some(send_result),
         }
     }
@@ -41,6 +43,10 @@ impl WriteReq {
 
     pub(crate) fn entries_vptrs_mut(&mut self) -> &mut Vec<(Entry, ValuePointer)> {
         &mut self.entries_vptrs
+    }
+
+    pub(crate) fn set_result(&mut self, result: Result<()>) {
+        self.result = result;
     }
 }
 
@@ -128,27 +134,40 @@ impl DB {
         if reqs.len() == 0 {
             return Ok(());
         }
+        let done = |e: anyhow::Error, reqs: &mut Vec<WriteReq>| {
+            let ex = Arc::new(e);
+            reqs.iter_mut().for_each(|r| {
+                r.set_result(Err(anyhow!(Arc::clone(&ex))));
+            });
+            ex
+        };
 
         debug!("write_requests called. Writing to value log");
-        self.vlog.write(&mut reqs).await?;
+        if let Err(e) = self.vlog.write(&mut reqs).await {
+            bail!(done(e, &mut reqs));
+        };
 
         debug!("Writing to memtable");
         let mut count = 0;
-        for req in reqs {
+        let mut err = None;
+        for req in reqs.iter_mut() {
             if req.entries_vptrs.len() == 0 {
                 continue;
             }
             count += req.entries_vptrs.len();
-            let mut i = 0;
-            while !self.ensure_room_for_write().await? {
-                i += 1;
-                if i % 100 == 0 {
-                    debug!("Making room for writes")
-                }
-                sleep(Duration::from_millis(10)).await;
+
+            if let Err(e) = self.ensure_room_for_write().await {
+                err = Some(e);
+                break;
             }
 
-            self.write_to_memtable(&req).await?;
+            if let Err(e) = self.write_to_memtable(req).await {
+                err = Some(e);
+                break;
+            }
+        }
+        if let Some(e) = err {
+            bail!(done(e, &mut reqs));
         }
 
         // TODO
@@ -159,12 +178,44 @@ impl DB {
         todo!()
     }
 
-    async fn write_to_memtable(&self, req: &WriteReq) -> Result<()> {
-        todo!()
+    async fn write_to_memtable(&self, req: &mut WriteReq) -> Result<()> {
+        let mt = self.mt.as_ref().unwrap().write().await;
+        for (ent, vp) in req.entries_vptrs.iter_mut() {
+            if let Err(e) = if ent.skip_vlog(self.opt.value_threshold) {
+                ent.get_meta_mut().remove(Meta::VALUE_POINTER);
+                mt.put(ent).await
+            } else {
+                ent.get_meta_mut().insert(Meta::VALUE_POINTER);
+                ent.set_value(vp.encode());
+                mt.put(ent).await
+            } {
+                bail!("Write to mem_table error: {}", e)
+            };
+        }
+
+        if self.opt.sync_writes {
+            mt.sync_wal()?;
+        }
+
+        Ok(())
     }
 
-    async fn ensure_room_for_write(&self) -> Result<bool> {
-        todo!()
+    async fn ensure_room_for_write(&self) -> Result<()> {
+        let mt = self.mt.as_ref().unwrap();
+        if !mt.read().await.is_full() {
+            return Ok(());
+        }
+        debug!("Making room for writes");
+
+        let mt_new = self.new_mem_table().await?;
+        let mut mt = mt.write().await;
+        let mt = replace(&mut *mt, mt_new);
+        let mt = Arc::new(mt);
+
+        self.flush_tx.send(Arc::clone(&mt)).await?;
+        self.imm.write().await.push(Arc::clone(&mt));
+
+        Ok(())
     }
 }
 

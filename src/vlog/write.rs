@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
 use crate::{
-    entry::{Entry, ValuePointer, BIT_FIN_TXN, BIT_TXN},
+    entry::{Entry, Meta, ValuePointer},
     util::DEFAULT_PAGE_SIZE,
     vlog::MAX_VLOG_FILE_SIZE,
     write::WriteReq,
@@ -25,15 +25,13 @@ impl ValueLog {
                 buf.clear();
                 value_sizes.push(ent.get_value().len());
 
-                if ent.skip_vlog_and_set_threshold(self.get_value_threshold()) {
+                if ent.skip_vlog(self.get_value_threshold()) {
                     *vp = ValuePointer::default();
                     continue;
                 }
                 let tmp_meta = ent.get_meta();
-                let txn_marks = BIT_TXN | BIT_FIN_TXN;
-                let meta_no_txnmarks = ent.get_meta() & txn_marks;
-                let meta_no_txnmarks = meta_no_txnmarks ^ txn_marks;
-                ent.set_meta(meta_no_txnmarks);
+
+                ent.get_meta_mut().remove(Meta::TXN.union(Meta::FIN_TXN));
                 let plen = self.encode_entry(&mut buf, ent, self.woffset())?;
                 ent.set_meta(tmp_meta);
                 *vp = ValuePointer::new(cur_logfile_w.get_fid(), plen, self.woffset());

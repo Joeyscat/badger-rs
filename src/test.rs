@@ -62,7 +62,7 @@ pub(crate) mod table {
                     meta: b'A',
                     user_meta: 0,
                     expires_at: 0,
-                    value: Arc::new(v.into()),
+                    value: v.to_owned().into(),
                     version: 0,
                 },
                 0,

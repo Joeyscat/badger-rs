@@ -70,7 +70,7 @@ pub(crate) mod kv {
         key
     }
 
-    pub fn parse_ts(key: &Vec<u8>) -> u64 {
+    pub fn parse_ts(key: &[u8]) -> u64 {
         if key.len() < 8 {
             return 0;
         }

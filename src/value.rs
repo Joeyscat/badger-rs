@@ -1,24 +1,25 @@
-use std::{fmt::Display, sync::Arc};
+use std::fmt::Display;
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
 use integer_encoding::VarInt;
 
 pub struct ValueStruct {
     pub meta: u8,
     pub user_meta: u8,
     pub expires_at: u64,
-    pub value: Arc<Vec<u8>>,
+    pub value: Bytes,
 
     pub version: u64, // This field is not serialized. Only for internal usage.
 }
 
 impl ValueStruct {
-    pub fn new(value: Arc<Vec<u8>>) -> ValueStruct {
+    pub fn new<B: Into<Bytes>>(value: B) -> ValueStruct {
         ValueStruct {
             meta: 0,
             user_meta: 0,
             expires_at: 0,
-            value,
+            value: value.into(),
             version: 0,
         }
     }
@@ -48,7 +49,7 @@ impl ValueStruct {
             meta,
             user_meta,
             expires_at,
-            value: Arc::new(value.to_vec()),
+            value: value.to_vec().into(),
             version: 0,
         })
     }

@@ -1,19 +1,27 @@
 use anyhow::{anyhow, bail, Result};
+use bitflags::bitflags;
+use bytes::Bytes;
 use integer_encoding::VarIntReader;
-use std::{cell::RefCell, io::ErrorKind::UnexpectedEof, io::Read, rc::Rc, sync::Arc};
+use std::{cell::RefCell, io::ErrorKind::UnexpectedEof, io::Read, rc::Rc};
 
 use crate::{error::Error, manifest::CASTAGNOLI};
 
-pub const BIT_DELETE: u8 = 1 << 0;
-pub const BIT_VALUE_POINTER: u8 = 1 << 1;
-pub const BIT_DISCARD_EARLIER_VERSIONS: u8 = 1 << 2;
-pub const BIT_MERGE_ENTRY: u8 = 1 << 3;
-pub const BIT_TXN: u8 = 1 << 6;
-pub const BIT_FIN_TXN: u8 = 1 << 7;
+pub(crate) const MAX_HEADER_SIZE: usize = 22;
+pub(crate) const CRC_SIZE: usize = 4;
+pub(crate) const VP_SIZE: usize = std::mem::size_of::<ValuePointer>();
 
-pub const MAX_HEADER_SIZE: usize = 22;
-
-pub const CRC_SIZE: usize = 4;
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Meta(u8);
+bitflags! {
+    impl Meta: u8 {
+        const DELETE = 1 << 0;
+        const VALUE_POINTER = 1 << 1;
+        const DISCARD_EARLIER_VERSIONS = 1 << 2;
+        const MERGE_ENTRY = 1 << 3;
+        const TXN = 1 << 6;
+        const FIN_TXN = 1 << 7;
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ValuePointer {
@@ -29,6 +37,24 @@ impl ValuePointer {
 
     pub(crate) fn len(&self) -> u32 {
         self.len
+    }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        unsafe {
+            let v: &[u8] = std::slice::from_raw_parts((self as *const Self) as *const u8, VP_SIZE);
+            v.to_vec()
+        }
+    }
+
+    pub fn decode(data: &[u8]) -> Self {
+        assert_eq!(VP_SIZE, data.len());
+        let s: Self = Default::default();
+        unsafe {
+            let v: &mut [u8] =
+                std::slice::from_raw_parts_mut((&s as *const Self) as *mut u8, VP_SIZE);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), v.as_mut_ptr(), VP_SIZE);
+        }
+        s
     }
 }
 
@@ -121,12 +147,12 @@ impl<'a, R: ?Sized + Read> Read for HashReader<'a, R> {
 
 #[derive(Debug, Clone)]
 pub struct Entry {
-    key: Vec<u8>,
+    key: Bytes,
     expires_at: u64,
-    value: Arc<Vec<u8>>,
+    value: Bytes,
     version: u64,
     user_meta: u8,
-    meta: u8,
+    meta: Meta,
 
     offset: u32,
     header_len: u32,
@@ -134,7 +160,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn new(key: Vec<u8>, value: Arc<Vec<u8>>) -> Self {
+    pub fn new(key: Bytes, value: Bytes) -> Self {
         Self {
             key,
             value,
@@ -142,20 +168,16 @@ impl Entry {
         }
     }
 
-    pub fn delete(key: Vec<u8>) -> Self {
+    pub fn delete(key: Bytes) -> Self {
         Self {
             key,
-            meta: BIT_DELETE,
+            meta: Meta::DELETE,
             ..Entry::default()
         }
     }
 
-    pub(crate) fn skip_vlog_and_set_threshold(&mut self, threshole: u32) -> bool {
-        if self.value_threshold == 0 {
-            self.value_threshold = threshole;
-        }
-
-        self.value.len() < self.value_threshold as usize
+    pub(crate) fn skip_vlog(&self, threshole: usize) -> bool {
+        self.value.len() < threshole
     }
 
     #[allow(dead_code)]
@@ -172,12 +194,16 @@ impl Entry {
         return (k + 12 + 2) as u32; // 12 for value_pointer, 2 for metas.
     }
 
-    pub(crate) fn get_key(&self) -> &Vec<u8> {
+    pub(crate) fn get_key(&self) -> &Bytes {
         &self.key
     }
 
-    pub(crate) fn get_value(&self) -> Arc<Vec<u8>> {
-        self.value.clone()
+    pub(crate) fn get_value(&self) -> &Bytes {
+        &self.value
+    }
+
+    pub(crate) fn set_value<B: Into<Bytes>>(&mut self, value: B) {
+        self.value = value.into()
     }
 
     pub(crate) fn get_expires_at(&self) -> u64 {
@@ -204,11 +230,15 @@ impl Entry {
         self.header_len = header_len
     }
 
-    pub(crate) fn get_meta(&self) -> u8 {
+    pub(crate) fn get_meta(&self) -> Meta {
         self.meta
     }
 
-    pub(crate) fn set_meta(&mut self, meta: u8) {
+    pub(crate) fn get_meta_mut(&mut self) -> &mut Meta {
+        &mut self.meta
+    }
+
+    pub(crate) fn set_meta(&mut self, meta: Meta) {
         self.meta = meta
     }
 
