@@ -179,13 +179,13 @@ impl DB {
     }
 
     async fn write_to_memtable(&self, req: &mut WriteReq) -> Result<()> {
-        let mt = self.mt.as_ref().unwrap().write().await;
+        let mut mt = self.mt.as_ref().unwrap().write().await;
         for (ent, vp) in req.entries_vptrs.iter_mut() {
             if let Err(e) = if ent.skip_vlog(self.opt.value_threshold) {
-                ent.get_meta_mut().remove(Meta::VALUE_POINTER);
+                ent.meta_mut().remove(Meta::VALUE_POINTER);
                 mt.put(ent).await
             } else {
-                ent.get_meta_mut().insert(Meta::VALUE_POINTER);
+                ent.meta_mut().insert(Meta::VALUE_POINTER);
                 ent.set_value(vp.encode());
                 mt.put(ent).await
             } {

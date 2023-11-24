@@ -2,7 +2,13 @@ use anyhow::{anyhow, bail, Result};
 use bitflags::bitflags;
 use bytes::Bytes;
 use integer_encoding::VarIntReader;
-use std::{cell::RefCell, io::ErrorKind::UnexpectedEof, io::Read, rc::Rc};
+use std::{
+    cell::RefCell,
+    fmt::{Debug, Display},
+    io::ErrorKind::UnexpectedEof,
+    io::Read,
+    rc::Rc,
+};
 
 use crate::{error::Error, manifest::CASTAGNOLI};
 
@@ -10,7 +16,7 @@ pub(crate) const MAX_HEADER_SIZE: usize = 22;
 pub(crate) const CRC_SIZE: usize = 4;
 pub(crate) const VP_SIZE: usize = std::mem::size_of::<ValuePointer>();
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Meta(u8);
 bitflags! {
     impl Meta: u8 {
@@ -20,6 +26,18 @@ bitflags! {
         const MERGE_ENTRY = 1 << 3;
         const TXN = 1 << 6;
         const FIN_TXN = 1 << 7;
+    }
+}
+
+impl Debug for Meta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
+
+impl Display for Meta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
     }
 }
 
@@ -194,11 +212,11 @@ impl Entry {
         return (k + 12 + 2) as u32; // 12 for value_pointer, 2 for metas.
     }
 
-    pub(crate) fn get_key(&self) -> &Bytes {
+    pub(crate) fn key(&self) -> &Bytes {
         &self.key
     }
 
-    pub(crate) fn get_value(&self) -> &Bytes {
+    pub(crate) fn value(&self) -> &Bytes {
         &self.value
     }
 
@@ -206,7 +224,15 @@ impl Entry {
         self.value = value.into()
     }
 
-    pub(crate) fn get_expires_at(&self) -> u64 {
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub(crate) fn set_version(&mut self, version: u64) {
+        self.version = version;
+    }
+
+    pub(crate) fn expires_at(&self) -> u64 {
         self.expires_at
     }
 
@@ -214,7 +240,7 @@ impl Entry {
         self.expires_at = expires_at
     }
 
-    pub(crate) fn get_offset(&self) -> u32 {
+    pub(crate) fn offset(&self) -> u32 {
         self.offset
     }
 
@@ -222,7 +248,7 @@ impl Entry {
         self.offset = offset
     }
 
-    pub(crate) fn get_header_len(&self) -> u32 {
+    pub(crate) fn header_len(&self) -> u32 {
         self.header_len
     }
 
@@ -230,11 +256,11 @@ impl Entry {
         self.header_len = header_len
     }
 
-    pub(crate) fn get_meta(&self) -> Meta {
+    pub(crate) fn meta(&self) -> Meta {
         self.meta
     }
 
-    pub(crate) fn get_meta_mut(&mut self) -> &mut Meta {
+    pub(crate) fn meta_mut(&mut self) -> &mut Meta {
         &mut self.meta
     }
 
@@ -242,7 +268,7 @@ impl Entry {
         self.meta = meta
     }
 
-    pub(crate) fn get_user_meta(&self) -> u8 {
+    pub(crate) fn user_meta(&self) -> u8 {
         self.user_meta
     }
 

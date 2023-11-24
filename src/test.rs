@@ -20,13 +20,13 @@ pub(crate) mod bt {
 }
 
 pub(crate) mod table {
-    use std::sync::Arc;
 
     use anyhow::Result;
     use rand::RngCore;
     use temp_dir::TempDir;
 
     use crate::{
+        entry::Meta,
         table::{Builder, Options, Table},
         util::kv::key_with_ts,
         value::ValueStruct,
@@ -53,13 +53,13 @@ pub(crate) mod table {
         return build_table(kvs, opts).await;
     }
 
-    async fn build_table(mut kvs: Vec<(String, String)>, opts: Options) -> Result<Table> {
+    async fn build_table(kvs: Vec<(String, String)>, opts: Options) -> Result<Table> {
         let mut builder = Builder::new(opts);
         for (k, v) in kvs {
             builder.add(
                 key_with_ts(k.into(), 0),
                 ValueStruct {
-                    meta: b'A',
+                    meta: Meta::from_bits_retain(b'A'),
                     user_meta: 0,
                     expires_at: 0,
                     value: v.to_owned().into(),

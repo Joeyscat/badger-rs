@@ -461,7 +461,7 @@ mod tests {
             assert!(iter.seek_to_first().unwrap());
             let v = iter.value_struct().unwrap();
             assert_eq!(&Vec::from("0"), v.value.as_ref());
-            assert_eq!(b'A', v.meta);
+            assert_eq!(b'A', v.meta.bits());
         }
     }
 
@@ -475,12 +475,12 @@ mod tests {
             assert!(iter.seek_to_last().unwrap());
             let v = iter.value_struct().unwrap();
             assert_eq!(&Vec::from((n - 1).to_string()), v.value.as_ref());
-            assert_eq!(b'A', v.meta);
+            assert_eq!(b'A', v.meta.bits());
 
             assert!(iter.prev().unwrap());
             let v = iter.value_struct().unwrap();
             assert_eq!(&Vec::from((n - 2).to_string()), v.value.as_ref());
-            assert_eq!(b'A', v.meta);
+            assert_eq!(b'A', v.meta.bits());
         }
     }
 
@@ -548,7 +548,7 @@ mod tests {
             while iter.valid().unwrap() {
                 let v = iter.value_struct().unwrap();
                 assert_eq!(&count.to_string().into_bytes(), v.value.as_ref());
-                assert_eq!(b'A', v.meta);
+                assert_eq!(b'A', v.meta.bits());
                 count += 1;
                 iter.next().unwrap();
             }
@@ -570,7 +570,7 @@ mod tests {
                 assert!(iter.prev().unwrap());
                 let v = iter.value_struct().unwrap();
                 assert_eq!(&i.to_string().into_bytes(), v.value.as_ref());
-                assert_eq!(b'A', v.meta);
+                assert_eq!(b'A', v.meta.bits());
             }
             assert!(!iter.prev().unwrap());
         }

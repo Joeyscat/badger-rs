@@ -4,8 +4,11 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use integer_encoding::VarInt;
 
+use crate::entry::Meta;
+
+#[derive(Default)]
 pub struct ValueStruct {
-    pub meta: u8,
+    pub meta: Meta,
     pub user_meta: u8,
     pub expires_at: u64,
     pub value: Bytes,
@@ -16,11 +19,8 @@ pub struct ValueStruct {
 impl ValueStruct {
     pub fn new<B: Into<Bytes>>(value: B) -> ValueStruct {
         ValueStruct {
-            meta: 0,
-            user_meta: 0,
-            expires_at: 0,
             value: value.into(),
-            version: 0,
+            ..Default::default()
         }
     }
 
@@ -32,7 +32,7 @@ impl ValueStruct {
 
     pub fn encode_to_vec(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.encoded_size());
-        buf.push(self.meta);
+        buf.push(self.meta.bits());
         buf.push(self.user_meta);
         buf.extend_from_slice(&self.expires_at.encode_var_vec());
         buf.extend_from_slice(&self.value);
@@ -46,7 +46,7 @@ impl ValueStruct {
         let value = &data[sz + 2..];
 
         Ok(ValueStruct {
-            meta,
+            meta: Meta::from_bits_retain(meta),
             user_meta,
             expires_at,
             value: value.to_vec().into(),

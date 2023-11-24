@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
+use bytes::BytesMut;
 
 use crate::{
-    entry::{Entry, Meta, ValuePointer},
+    entry::{Meta, ValuePointer},
     util::DEFAULT_PAGE_SIZE,
     vlog::MAX_VLOG_FILE_SIZE,
     write::WriteReq,
@@ -14,7 +15,7 @@ impl ValueLog {
         self.validate_writes(reqs)?;
 
         let mut cur_logfile = self.get_latest_logfile().await?;
-        let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_PAGE_SIZE.to_owned());
+        let mut buf = BytesMut::with_capacity(DEFAULT_PAGE_SIZE.to_owned());
         for req in reqs.iter_mut() {
             let mut cur_logfile_w = cur_logfile.write().await;
             let entries_vptrs = req.entries_vptrs_mut();
@@ -23,16 +24,16 @@ impl ValueLog {
 
             for (ent, vp) in entries_vptrs {
                 buf.clear();
-                value_sizes.push(ent.get_value().len());
+                value_sizes.push(ent.value().len());
 
                 if ent.skip_vlog(self.get_value_threshold()) {
                     *vp = ValuePointer::default();
                     continue;
                 }
-                let tmp_meta = ent.get_meta();
+                let tmp_meta = ent.meta();
 
-                ent.get_meta_mut().remove(Meta::TXN.union(Meta::FIN_TXN));
-                let plen = self.encode_entry(&mut buf, ent, self.woffset())?;
+                ent.meta_mut().remove(Meta::TXN.union(Meta::FIN_TXN));
+                let plen = cur_logfile_w.encode_entry(&mut buf, ent, self.woffset() as usize)?;
                 ent.set_meta(tmp_meta);
                 *vp = ValuePointer::new(cur_logfile_w.get_fid(), plen, self.woffset());
 
@@ -77,10 +78,6 @@ impl ValueLog {
         }
 
         Ok(())
-    }
-
-    fn encode_entry(&self, buf: &mut Vec<u8>, ent: &Entry, offset: u32) -> Result<u32> {
-        todo!()
     }
 
     fn validate_writes(&self, reqs: &Vec<WriteReq>) -> Result<()> {

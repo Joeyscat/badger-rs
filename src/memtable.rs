@@ -2,14 +2,14 @@ use std::{
     cell::RefCell,
     fmt::Display,
     io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read},
-    ops::{Deref, DerefMut},
+    ops::{AddAssign, Deref, DerefMut},
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic,
 };
 
 use anyhow::{anyhow, bail, Result};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use log::debug;
 use rand::seq::SliceRandom;
 use tokio::fs::remove_file;
@@ -31,7 +31,7 @@ use crate::{
 pub const MEM_FILE_EXT: &str = ".mem";
 
 pub(crate) struct MemTable {
-    pub(crate) sl: crossbeam_skiplist::SkipMap<Vec<u8>, ValueStruct>,
+    pub(crate) sl: crossbeam_skiplist::SkipMap<Bytes, ValueStruct>,
     pub(crate) wal: LogFile,
     max_version: atomic::AtomicU64,
     // opt: Options,
@@ -85,8 +85,29 @@ impl MemTable {
         todo!()
     }
 
-    pub(crate) async fn put(&self, ent: &Entry) -> Result<()> {
-        todo!()
+    pub(crate) async fn put(&mut self, ent: &Entry) -> Result<()> {
+        self.wal.write_entry(&mut self.buf, ent).await?;
+
+        if ent.meta().contains(Meta::FIN_TXN) {
+            return Ok(());
+        }
+
+        self.sl.insert(
+            ent.key().clone(),
+            ValueStruct {
+                meta: ent.meta(),
+                user_meta: ent.user_meta(),
+                expires_at: ent.expires_at(),
+                value: ent.value().clone(),
+                version: ent.version(),
+            },
+        );
+        let ts = parse_ts(&ent.key());
+        if ts > self.max_version.load(MEM_ORDERING) {
+            self.max_version.store(ts, MEM_ORDERING);
+        }
+
+        Ok(())
     }
 
     async fn update_skip_list(&mut self) -> Result<()> {
@@ -115,24 +136,24 @@ impl MemTable {
             if first {
                 debug!(
                     "First key={}",
-                    String::from_utf8(e.get_key().to_vec())
+                    String::from_utf8(e.key().to_vec())
                         .map_or("UNKOWN(decode utf8 fail)".to_string(), |s| s),
                 );
                 first = false;
             }
-            let ts = parse_ts(e.get_key());
+            let ts = parse_ts(e.key());
             if ts > self.max_version.load(MEM_ORDERING) {
                 self.max_version.store(ts, MEM_ORDERING);
             }
             let v = ValueStruct {
-                meta: e.get_meta().bits(),
-                user_meta: e.get_user_meta(),
-                expires_at: e.get_expires_at(),
-                value: e.get_value().clone(),
+                meta: e.meta(),
+                user_meta: e.user_meta(),
+                expires_at: e.expires_at(),
+                value: e.value().clone(),
                 version: 0,
             };
 
-            self.sl.insert(e.get_key().to_vec(), v);
+            self.sl.insert(e.key().clone(), v);
             Ok(())
         }
     }
@@ -145,7 +166,7 @@ pub(crate) struct LogFile {
     size: atomic::AtomicU32,
     // data_key: pb::DataKey,
     base_iv: Vec<u8>,
-    write_at: u32,
+    write_at: usize,
 }
 
 impl Deref for LogFile {
@@ -258,7 +279,7 @@ impl LogFile {
 
         loop {
             let ent = match self.entry(Rc::clone(&reader), offset as usize) {
-                Ok(ent) if ent.get_key().is_empty() => break,
+                Ok(ent) if ent.key().is_empty() => break,
                 Ok(ent) => ent,
                 // We have not reached the end of the file buf the entry we read is
                 // zero. This happens because we have truncated the file and zero'ed
@@ -269,14 +290,14 @@ impl LogFile {
                 Err(e) => bail!(e),
             };
 
-            let ent_len = ent.get_header_len()
-                + (ent.get_key().len() + ent.get_value().len() + CRC_SIZE) as u32;
-            let vp = ValuePointer::new(self.fid, ent_len, ent.get_offset());
+            let ent_len =
+                ent.header_len() + (ent.key().len() + ent.value().len() + CRC_SIZE) as u32;
+            let vp = ValuePointer::new(self.fid, ent_len, ent.offset());
             offset += vp.len();
 
-            match ent.get_meta() {
+            match ent.meta() {
                 meta if meta.contains(Meta::TXN) => {
-                    let txn_ts = parse_ts(ent.get_key());
+                    let txn_ts = parse_ts(ent.key());
                     if last_commit == 0 {
                         last_commit = txn_ts;
                     }
@@ -288,7 +309,7 @@ impl LogFile {
                 }
 
                 meta if meta.contains(Meta::FIN_TXN) => {
-                    let txn_ts: u64 = match String::from_utf8(ent.get_value().to_vec()) {
+                    let txn_ts: u64 = match String::from_utf8(ent.value().to_vec()) {
                         Ok(s) => match s.parse() {
                             Ok(i) => i,
                             _ => break,
@@ -370,6 +391,27 @@ impl LogFile {
         ent.set_user_meta(header.user_meta);
 
         Ok(ent)
+    }
+
+    /// encode_entry will encode entry to the buf
+    /// layout of entry
+    /// +--------+-----+-------+-------+
+    /// | header | key | value | crc32 |
+    /// +--------+-----+-------+-------+
+    pub(crate) fn encode_entry(&self, buf: &BytesMut, ent: &Entry, offset: usize) -> Result<u32> {
+        todo!()
+    }
+
+    async fn write_entry(&mut self, buf: &mut BytesMut, ent: &Entry) -> Result<()> {
+        buf.clear();
+        let plen = self.encode_entry(buf, ent, self.write_at)?;
+        let offset = self.write_at;
+
+        self.write_slice(offset, &buf)?;
+        self.write_at.add_assign(plen as usize);
+
+        self.zero_next_entry();
+        Ok(())
     }
 
     pub(crate) async fn truncate(&mut self, offset: u32) -> Result<()> {
