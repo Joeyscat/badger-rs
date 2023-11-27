@@ -1,22 +1,22 @@
 use anyhow::{anyhow, bail, Result};
 use bitflags::bitflags;
-use bytes::Bytes;
-use integer_encoding::VarIntReader;
+use bytes::{BufMut, Bytes, BytesMut};
+use integer_encoding::{VarInt, VarIntReader};
 use std::{
     cell::RefCell,
     fmt::{Debug, Display},
-    io::ErrorKind::UnexpectedEof,
     io::Read,
+    io::{BufRead, ErrorKind::UnexpectedEof},
     rc::Rc,
 };
 
-use crate::{error::Error, manifest::CASTAGNOLI};
+use crate::{error::Error, manifest::CASTAGNOLI, util::hash::HashReader};
 
 pub(crate) const MAX_HEADER_SIZE: usize = 22;
 pub(crate) const CRC_SIZE: usize = 4;
 pub(crate) const VP_SIZE: usize = std::mem::size_of::<ValuePointer>();
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Meta(u8);
 bitflags! {
     impl Meta: u8 {
@@ -76,6 +76,7 @@ impl ValuePointer {
     }
 }
 
+#[derive(Debug, Default)]
 pub(crate) struct Header {
     pub key_len: u64,
     pub value_len: u64,
@@ -86,13 +87,7 @@ pub(crate) struct Header {
 
 impl Header {
     pub(crate) fn decode_from<R: Read>(mut reader: R) -> Result<Self> {
-        let mut header = Header {
-            key_len: 0,
-            value_len: 0,
-            expires_at: 0,
-            meta: 0,
-            user_meta: 0,
-        };
+        let mut header = Header::default();
 
         let mut buf = [0; 2];
         match reader.read_exact(&mut buf) {
@@ -122,44 +117,18 @@ impl Header {
     /// +------+----------+------------+--------------+-----------+
     /// | Meta | UserMeta | Key Length | Value Length | ExpiresAt |
     /// +------+----------+------------+--------------+-----------+
-    pub(crate) fn encode(&self) {
-        todo!()
-    }
-}
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(MAX_HEADER_SIZE);
+        buf.resize(MAX_HEADER_SIZE, 0);
+        buf.insert(0, self.meta);
+        buf.insert(1, self.user_meta);
+        let mut off = 2;
+        off += self.key_len.encode_var(&mut buf[off..]);
+        off += self.value_len.encode_var(&mut buf[off..]);
+        off += self.expires_at.encode_var(&mut buf[off..]);
 
-pub struct HashReader<'a, R: ?Sized> {
-    count: usize,
-    hash: crc::Digest<'a, u32>,
-    inner: Rc<RefCell<R>>,
-}
-
-impl<'a, R: Read> HashReader<'a, R> {
-    pub fn new(inner: Rc<RefCell<R>>) -> HashReader<'a, R> {
-        let hash = CASTAGNOLI.digest();
-        Self {
-            inner,
-            hash,
-            count: 0,
-        }
-    }
-
-    pub fn sum32(&self) -> u32 {
-        self.hash.clone().finalize()
-    }
-
-    pub fn count(&self) -> usize {
-        return self.count;
-    }
-}
-
-impl<'a, R: ?Sized + Read> Read for HashReader<'a, R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let bytes_read = self.inner.borrow_mut().read(buf)?;
-        self.count += bytes_read;
-
-        self.hash.update(&buf[..bytes_read]);
-
-        Ok(bytes_read)
+        buf.resize(off, 0);
+        buf
     }
 }
 
@@ -196,6 +165,79 @@ impl Entry {
 
     pub(crate) fn skip_vlog(&self, threshole: usize) -> bool {
         self.value.len() < threshole
+    }
+
+    pub(crate) fn decode_from_reader<R: BufRead>(
+        reader: Rc<RefCell<R>>,
+        offset: usize,
+    ) -> Result<Self> {
+        let mut tee = HashReader::new(Rc::clone(&reader));
+        let header = Header::decode_from(&mut tee)?;
+        let header_len = tee.count();
+
+        if header.key_len > 1 << 16 {
+            bail!(Error::VLogTruncate)
+        }
+
+        let mut buf = BytesMut::zeroed((header.key_len + header.value_len) as usize);
+        match tee.read_exact(&mut buf) {
+            Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
+            Err(e) => bail!(e),
+            _ => {}
+        };
+        let (k, v) = buf.split_at(header.key_len as usize);
+
+        let mut bufx = [0; CRC_SIZE];
+        match reader.borrow_mut().read_exact(&mut bufx) {
+            Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
+            Err(e) => bail!(e),
+            _ => {}
+        };
+        let crc = u32::from_be_bytes(bufx);
+        if crc != tee.sum32() {
+            bail!(Error::VLogTruncate);
+        }
+
+        // TODO optimize bytes copy
+        let mut ent = Entry::new(k.to_vec().into(), v.to_vec().into());
+        ent.set_expires_at(header.expires_at);
+        ent.set_offset(offset as u32);
+        ent.set_header_len(header_len as u32);
+        ent.set_meta(Meta::from_bits_retain(header.meta));
+        ent.set_user_meta(header.user_meta);
+
+        Ok(ent)
+    }
+
+    /// encode_with_buf will encode entry to the buf
+    /// layout of entry
+    /// +--------+-----+-------+-------+
+    /// | header | key | value | crc32 |
+    /// +--------+-----+-------+-------+
+    pub(crate) fn encode_with_buf(&self, buf: &mut BytesMut, _offset: usize) -> Result<u32> {
+        let header = Header {
+            key_len: self.key().len() as u64,
+            value_len: self.value().len() as u64,
+            expires_at: self.expires_at(),
+            meta: self.meta().bits(),
+            user_meta: self.user_meta(),
+        };
+        let header_buf = header.encode();
+
+        let mut hash = CASTAGNOLI.digest();
+
+        buf.put_slice(&header_buf);
+        hash.update(&header_buf);
+        buf.put_slice(&self.key());
+        hash.update(&self.key());
+        buf.put_slice(&self.value());
+        hash.update(&self.value());
+
+        let sum = hash.finalize();
+        buf.put_u32(sum);
+
+        let n = header_buf.len() + self.key().len() + self.value().len() + CRC_SIZE;
+        Ok(n as u32)
     }
 
     #[allow(dead_code)]

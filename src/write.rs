@@ -37,7 +37,7 @@ impl WriteReq {
         }
     }
 
-    pub(crate) fn entries_vptrs(&mut self) -> &Vec<(Entry, ValuePointer)> {
+    pub(crate) fn entries_vptrs(&self) -> &Vec<(Entry, ValuePointer)> {
         &self.entries_vptrs
     }
 
@@ -175,7 +175,7 @@ impl DB {
         // self.publisher.send_updates(reqs)?;
 
         debug!("{} entries written", count);
-        todo!()
+        Ok(())
     }
 
     async fn write_to_memtable(&self, req: &mut WriteReq) -> Result<()> {

@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use bytes::BytesMut;
 
 use crate::{
-    entry::{Meta, ValuePointer},
+    entry::{Meta, ValuePointer, CRC_SIZE, MAX_HEADER_SIZE},
     util::DEFAULT_PAGE_SIZE,
     vlog::MAX_VLOG_FILE_SIZE,
     write::WriteReq,
@@ -33,7 +33,7 @@ impl ValueLog {
                 let tmp_meta = ent.meta();
 
                 ent.meta_mut().remove(Meta::TXN.union(Meta::FIN_TXN));
-                let plen = cur_logfile_w.encode_entry(&mut buf, ent, self.woffset() as usize)?;
+                let plen = ent.encode_with_buf(&mut buf, self.woffset() as usize)?;
                 ent.set_meta(tmp_meta);
                 *vp = ValuePointer::new(cur_logfile_w.get_fid(), plen, self.woffset());
 
@@ -105,6 +105,10 @@ impl ValueLog {
     }
 
     fn estimate_request_size(req: &WriteReq) -> u64 {
-        todo!()
+        let mut size = 0;
+        for (ent, _) in req.entries_vptrs().iter() {
+            size += MAX_HEADER_SIZE + ent.key().len() + ent.value().len() + CRC_SIZE;
+        }
+        size as u64
     }
 }

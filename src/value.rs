@@ -68,3 +68,28 @@ impl Display for ValueStruct {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, io::BufReader, rc::Rc};
+
+    use bytes::BytesMut;
+
+    use crate::entry::Entry;
+
+    #[test]
+    fn test_entry() {
+        let ent = Entry::new("key".into(), "value".into());
+        let mut buf = BytesMut::new();
+        let _ = ent.encode_with_buf(&mut buf, 0).unwrap();
+
+        let reader = BufReader::new(buf.as_ref());
+        let ent_1 = Entry::decode_from_reader(Rc::new(RefCell::new(reader)), 0).unwrap();
+
+        assert_eq!(ent.key(), ent_1.key(), "key mismatch");
+        assert_eq!(ent.value(), ent_1.value(), "value mismatch");
+        assert_eq!(ent.meta(), ent_1.meta(), "meta mismatch");
+        assert_eq!(ent.user_meta(), ent_1.user_meta(), "user_meta mismatch");
+        assert_eq!(ent.expires_at(), ent_1.expires_at(), "expires_at mismatch");
+    }
+}

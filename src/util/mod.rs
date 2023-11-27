@@ -1,5 +1,6 @@
 pub(crate) mod bloom;
 pub(crate) mod file;
+pub(crate) mod hash;
 pub(crate) mod iter;
 pub(crate) mod table;
 

@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     fmt::Display,
-    io::{BufRead, BufReader, ErrorKind::UnexpectedEof, Read},
+    io::BufReader,
     ops::{AddAssign, Deref, DerefMut},
     path::{Path, PathBuf},
     rc::Rc,
@@ -16,7 +16,7 @@ use tokio::fs::remove_file;
 
 use crate::{
     entry::Entry,
-    entry::{HashReader, Header, Meta, ValuePointer, CRC_SIZE, MAX_HEADER_SIZE},
+    entry::{Meta, ValuePointer, CRC_SIZE, MAX_HEADER_SIZE},
     error::Error,
     option::Options,
     util::{
@@ -34,7 +34,7 @@ pub(crate) struct MemTable {
     pub(crate) sl: crossbeam_skiplist::SkipMap<Bytes, ValueStruct>,
     pub(crate) wal: LogFile,
     max_version: atomic::AtomicU64,
-    // opt: Options,
+    opt: Options,
     buf: bytes::BytesMut,
 }
 
@@ -63,7 +63,7 @@ pub(crate) async fn open_mem_table(
         sl: crossbeam_skiplist::SkipMap::new(),
         wal,
         max_version: Default::default(),
-        // opt: opt,
+        opt: opt,
         buf: Default::default(),
     };
 
@@ -82,7 +82,8 @@ impl MemTable {
     }
 
     pub(crate) fn is_full(&self) -> bool {
-        todo!()
+        // TODO check skiplist mem_size
+        self.wal.write_at >= self.opt.mem_table_size
     }
 
     pub(crate) async fn put(&mut self, ent: &Entry) -> Result<()> {
@@ -278,7 +279,7 @@ impl LogFile {
         let mut vptrs = vec![];
 
         loop {
-            let ent = match self.entry(Rc::clone(&reader), offset as usize) {
+            let ent = match Entry::decode_from_reader(Rc::clone(&reader), offset as usize) {
                 Ok(ent) if ent.key().is_empty() => break,
                 Ok(ent) => ent,
                 // We have not reached the end of the file buf the entry we read is
@@ -354,57 +355,9 @@ impl LogFile {
         Ok(valid_end_offset)
     }
 
-    fn entry<R: BufRead>(&self, reader: Rc<RefCell<R>>, offset: usize) -> Result<Entry> {
-        let mut tee = HashReader::new(Rc::clone(&reader));
-        let header = Header::decode_from(&mut tee)?;
-        let header_len = tee.count();
-
-        if header.key_len > 1 << 16 {
-            bail!(Error::VLogTruncate)
-        }
-
-        let mut buf = BytesMut::zeroed((header.key_len + header.value_len) as usize);
-        match tee.read_exact(&mut buf) {
-            Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
-            Err(e) => bail!(e),
-            _ => {}
-        };
-        let (k, v) = buf.split_at(header.key_len as usize);
-
-        let mut bufx = [0; CRC_SIZE];
-        match reader.borrow_mut().read_exact(&mut bufx) {
-            Err(e) if e.kind() == UnexpectedEof => bail!(Error::VLogTruncate),
-            Err(e) => bail!(e),
-            _ => {}
-        };
-        let crc = u32::from_be_bytes(bufx);
-        if crc != tee.sum32() {
-            bail!(Error::VLogTruncate);
-        }
-
-        // TODO optimize bytes copy
-        let mut ent = Entry::new(k.to_vec().into(), v.to_vec().into());
-        ent.set_expires_at(header.expires_at);
-        ent.set_offset(offset as u32);
-        ent.set_header_len(header_len as u32);
-        ent.set_meta(Meta::from_bits_retain(header.meta));
-        ent.set_user_meta(header.user_meta);
-
-        Ok(ent)
-    }
-
-    /// encode_entry will encode entry to the buf
-    /// layout of entry
-    /// +--------+-----+-------+-------+
-    /// | header | key | value | crc32 |
-    /// +--------+-----+-------+-------+
-    pub(crate) fn encode_entry(&self, buf: &BytesMut, ent: &Entry, offset: usize) -> Result<u32> {
-        todo!()
-    }
-
     async fn write_entry(&mut self, buf: &mut BytesMut, ent: &Entry) -> Result<()> {
         buf.clear();
-        let plen = self.encode_entry(buf, ent, self.write_at)?;
+        let plen = ent.encode_with_buf(buf, self.write_at)?;
         let offset = self.write_at;
 
         self.write_slice(offset, &buf)?;
