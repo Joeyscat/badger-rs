@@ -13,6 +13,7 @@ mod manifest;
 mod memtable;
 mod skiplist;
 mod table;
+#[cfg(test)]
 mod test;
 mod util;
 mod value;

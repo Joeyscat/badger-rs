@@ -1,3 +1,4 @@
+use bytes::Bytes;
 
 pub struct IteratorOptions {}
 
@@ -11,5 +12,28 @@ impl std::iter::Iterator for Iterator {
     }
 }
 
+pub struct Item {
+    key: Bytes,
+    vptr: Bytes,
+    value: Bytes,
+    version: u64,
+    expires_at: u64,
+}
 
-pub struct Item {}
+impl Item {
+    pub fn key_copy(&self) -> Bytes {
+        self.key.clone()
+    }
+
+    pub fn value_copy(&self) -> Bytes {
+        self.value.clone()
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+}

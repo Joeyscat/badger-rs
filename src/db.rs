@@ -10,7 +10,7 @@ use tokio::{
     spawn,
     sync::{
         mpsc::{self, Sender},
-        Mutex, Notify, RwLock,
+        Notify, RwLock,
     },
 };
 
@@ -20,13 +20,24 @@ use crate::{
     manifest::{open_or_create_manifest_file, ManifestFile},
     memtable::{open_mem_table, MemTable, MEM_FILE_EXT},
     option::Options,
-    txn::Txn,
+    txn::{Oracle, Txn},
     util::MEM_ORDERING,
     vlog::ValueLog,
     write::{WriteReq, KV_WRITE_CH_CAPACITY},
 };
 
 pub struct DB(Arc<DBInner>);
+
+impl DB {
+    pub fn new_transaction(&self, update: bool) -> Result<Txn> {
+        let mut txn = Txn::new(Arc::clone(&self.0), update);
+
+        let read_ts = self.orc.read_ts();
+        txn.set_read_ts(read_ts);
+
+        Ok(txn)
+    }
+}
 
 impl Deref for DB {
     type Target = DBInner;
@@ -44,17 +55,18 @@ pub struct DBInner {
     pub(crate) mt: Option<Arc<RwLock<MemTable>>>,
     pub(crate) imm: RwLock<Vec<Arc<MemTable>>>,
 
-    next_mem_fid: atomic::AtomicU32,
+    pub(crate) next_mem_fid: atomic::AtomicU32,
 
     pub(crate) opt: Options,
-    manifest: Arc<RwLock<ManifestFile>>,
-    lc: LevelsController,
+    pub(crate) manifest: Arc<RwLock<ManifestFile>>,
+    pub(crate) lc: LevelsController,
     pub(crate) vlog: ValueLog,
     pub(crate) write_tx: Sender<WriteReq>,
     pub(crate) flush_tx: Sender<Arc<MemTable>>,
     // close_once: std::sync::Once,
     pub(crate) block_writes: atomic::AtomicBool,
     // is_closed: atomic::AtomicBool,
+    pub(crate) orc: Oracle,
 }
 
 impl Clone for DB {
@@ -91,6 +103,7 @@ impl DB {
             // close_once: todo!(),
             block_writes: false.into(),
             // is_closed: todo!(),
+            orc: Oracle::new(opt.clone()),
         };
 
         inner
@@ -126,10 +139,6 @@ impl DB {
 }
 
 impl DBInner {
-    pub fn new_transaction(&self, _update: bool) -> Result<Txn> {
-        unimplemented!()
-    }
-
     pub fn close(self) -> Result<()> {
         unimplemented!()
     }
@@ -246,6 +255,7 @@ mod tests {
         let manifest = Arc::new(RwLock::new(mf));
         let (write_tx, _) = mpsc::channel(KV_WRITE_CH_CAPACITY);
         let (flush_tx, _) = mpsc::channel(opt.num_memtables as usize);
+        let orc = Oracle::new(opt.clone());
         DB(Arc::new(DBInner {
             mt: None,
             imm: RwLock::new(Vec::with_capacity(opt.num_memtables as usize)),
@@ -257,6 +267,7 @@ mod tests {
             flush_tx,
             block_writes: true.into(),
             opt,
+            orc,
         }))
     }
 

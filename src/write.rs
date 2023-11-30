@@ -2,6 +2,7 @@ use std::{mem::replace, sync::Arc};
 
 use anyhow::{anyhow, bail, Result};
 use log::{debug, error};
+use scopeguard::defer;
 use tokio::{
     select, spawn,
     sync::{mpsc, oneshot, Notify},
@@ -11,7 +12,6 @@ use crate::{
     db::DB,
     entry::{Entry, Meta, ValuePointer},
     error::Error,
-    memtable::MemTable,
     util::MEM_ORDERING,
 };
 
@@ -68,6 +68,8 @@ impl DB {
         mut write_rx: mpsc::Receiver<WriteReq>,
         close: Arc<Notify>,
     ) {
+        defer!(close.notify_one());
+
         let notify_send = Arc::new(Notify::new());
         let notify_recv = notify_send.clone();
         notify_send.notify_one();
@@ -84,7 +86,7 @@ impl DB {
                 Some(req) = write_rx.recv() => {
                     write_req_buf.push(req);
                 }
-                _=close.notified() =>{
+                _ = close.notified() => {
                     while let Some(req) = write_rx.recv().await {
                         write_req_buf.push(req);
                     }
@@ -92,7 +94,7 @@ impl DB {
                     write_reqs(self.clone(), write_req_buf, notify_send.clone()).await;
                     return ;
                 }
-                else=>{
+                else => {
                     error!("write_rx closed!!!");
                 },
             }
@@ -109,12 +111,12 @@ impl DB {
                     Some(req) = write_rx.recv() => {
                         write_req_buf.push(req);
                     }
-                    _=notify_recv.notified() => {
+                    _ = notify_recv.notified() => {
                         spawn(write_reqs(self.clone(), write_req_buf, notify_send.clone()));
                         write_req_buf = Vec::with_capacity(10);
                         break 'a;
                     }
-                    _=close.notified() =>{
+                    _ = close.notified() => {
                         while let Some(req) = write_rx.recv().await {
                             write_req_buf.push(req);
                         }
@@ -122,7 +124,7 @@ impl DB {
                         write_reqs(self.clone(), write_req_buf, notify_send.clone()).await;
                         return ;
                     }
-                    else=>{
+                    else => {
                         error!("write_rx closed!!!");
                     },
                 }

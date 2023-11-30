@@ -1,3 +1,30 @@
+pub(crate) mod db {
+
+    use anyhow::Result;
+    use temp_dir::TempDir;
+
+    use crate::{db::DB, option::Options};
+
+    pub(crate) struct TestDB {
+        pub(crate) db: DB,
+        #[allow(dead_code)]
+        dir: TempDir,
+    }
+
+    pub(crate) async fn new_test_db(oopt: Option<Options>) -> Result<TestDB> {
+        let mut opt = if let Some(opt) = oopt {
+            opt
+        } else {
+            Options::default()
+        };
+        let test_dir = TempDir::new().unwrap();
+        opt.dir = test_dir.path().to_str().unwrap().to_string();
+        let db = DB::open(opt).await?;
+
+        Ok(TestDB { db, dir: test_dir })
+    }
+}
+
 pub(crate) mod bt {
 
     pub(crate) fn initdb_with_cli(filepath: &str) {
@@ -16,6 +43,17 @@ pub(crate) mod bt {
             .output()
             .expect("failed to execute <bt read>");
         assert!(x.status.success());
+    }
+
+    mod tests {
+        use super::initdb_with_cli;
+        use temp_dir::TempDir;
+
+        #[test]
+        fn test_bt() {
+            let test_dir = TempDir::new().unwrap();
+            initdb_with_cli(test_dir.path().to_str().unwrap());
+        }
     }
 }
 
@@ -78,19 +116,5 @@ pub(crate) mod table {
 
     pub(crate) fn key(prefix: &str, i: i64) -> String {
         format!("{}{:04}", prefix, i)
-    }
-}
-#[cfg(test)]
-mod tests {
-    use std::env::temp_dir;
-
-    use super::bt;
-    use rand::RngCore;
-
-    #[test]
-    fn test_bt() {
-        let filepath = temp_dir().join(format!("badgertest-{}", rand::thread_rng().next_u32()));
-        let filepath = filepath.to_str().unwrap();
-        bt::initdb_with_cli(filepath);
     }
 }
