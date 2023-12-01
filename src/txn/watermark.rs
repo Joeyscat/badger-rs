@@ -1,5 +1,6 @@
 use std::{
-    collections::HashMap,
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap},
     ops::Deref,
     sync::{atomic, Arc},
 };
@@ -29,7 +30,7 @@ pub(crate) struct WaterMark(Arc<WaterMarkInner>);
 
 #[derive(Debug)]
 pub(crate) struct WaterMarkInner {
-    donw_until: atomic::AtomicU64,
+    done_until: atomic::AtomicU64,
     last_index: atomic::AtomicU64,
     name: String,
     mark_tx: Sender<Mark>,
@@ -50,7 +51,7 @@ impl WaterMark {
         let wm = WaterMark(Arc::new(WaterMarkInner {
             name,
             mark_tx,
-            donw_until: Default::default(),
+            done_until: Default::default(),
             last_index: Default::default(),
         }));
 
@@ -76,11 +77,11 @@ impl WaterMark {
     }
 
     pub(crate) fn done_until(&self) -> u64 {
-        self.donw_until.load(MEM_ORDERING)
+        self.done_until.load(MEM_ORDERING)
     }
 
     pub(crate) fn set_done_until(&mut self, v: u64) {
-        self.donw_until.store(v, MEM_ORDERING)
+        self.done_until.store(v, MEM_ORDERING)
     }
 
     pub(crate) fn last_index(&self) -> u64 {
@@ -104,9 +105,62 @@ impl WaterMark {
         defer!(close.notify_one());
 
         let mut waiters: HashMap<u64, Vec<Arc<Notify>>> = HashMap::new();
+        let mut heap = BinaryHeap::new();
+        let mut pending: HashMap<u64, i32> = HashMap::new();
 
-        let process_one =
-            |index: u64, done: bool, waiters: &mut HashMap<u64, Vec<Arc<Notify>>>| todo!();
+        let mut process_one =
+            |index: u64, done: bool, waiters: &mut HashMap<u64, Vec<Arc<Notify>>>| {
+                let delta = if done { 1 } else { -1 };
+                match pending.get_mut(&index) {
+                    Some(prev) => {
+                        *prev += delta;
+                    }
+                    None => {
+                        heap.push(Reverse(index));
+                        pending.insert(index, delta);
+                    }
+                };
+
+                let done_until = self.done_until();
+                assert!(
+                    done_until <= index,
+                    "Name: {}, done_until: {done_until}, index: {index}",
+                    self.name
+                );
+
+                let mut until = done_until;
+                while !heap.is_empty() {
+                    let min = heap.peek().expect("must return a value").0;
+                    if pending.get(&min).unwrap().is_positive() {
+                        break;
+                    }
+                    heap.pop();
+                    pending.remove(&min);
+                    until = min;
+                }
+
+                if until != done_until {
+                    assert!(self
+                        .done_until
+                        .compare_exchange(done_until, until, MEM_ORDERING, MEM_ORDERING)
+                        .is_ok());
+                }
+
+                if until - done_until <= waiters.len() as u64 {
+                    for idx in done_until + 1..=until {
+                        if let Some(ns) = waiters.get(&idx) {
+                            ns.iter().for_each(|i| i.notify_one());
+                            waiters.remove(&idx);
+                        }
+                    }
+                } else {
+                    for idx in 0..(waiters.len() as u64).min(until + 1) {
+                        let ns = waiters.get(&idx).unwrap();
+                        ns.iter().for_each(|i| i.notify_one());
+                        waiters.remove(&idx);
+                    }
+                }
+            };
 
         loop {
             select! {
