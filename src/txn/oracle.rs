@@ -31,7 +31,7 @@ impl Oracle {
     pub(crate) async fn read_ts(&self) -> Result<u64> {
         let txnx = self.txnx.lock().map_err(|e| anyhow!("txnx: {}", e))?;
         let read_ts = txnx.next_txn_ts - 1;
-        self.read_mark.begin(read_ts);
+        self.read_mark.begin(read_ts).await;
         drop(txnx);
 
         assert!(self.txn_mark.wait_for_mark(read_ts).await.is_ok());
@@ -43,7 +43,7 @@ impl Oracle {
         Ok(txnx.next_txn_ts)
     }
 
-    pub(crate) fn incre_next_ts(&self) -> Result<()> {
+    pub(crate) fn incre_next_ts(&mut self) -> Result<()> {
         let txnx = self.txnx.get_mut().map_err(|e| anyhow!("txnx: {}", e))?;
         txnx.next_txn_ts += 1;
         Ok(())

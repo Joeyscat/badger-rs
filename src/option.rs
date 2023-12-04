@@ -74,8 +74,8 @@ pub struct Options {
     _managed_txns: bool,
 
     // Flags for testing purposes
-    _max_batch_count: u32,
-    _max_batch_size: u32,
+    pub(crate) max_batch_count: u32,
+    pub(crate) max_batch_size: u32,
 
     _max_value_threshold: f64,
 }
@@ -126,8 +126,8 @@ impl Default for Options {
             external_magic_version: Default::default(),
             _managed_txns: Default::default(),
 
-            _max_batch_count: Default::default(),
-            _max_batch_size: Default::default(),
+            max_batch_count: Default::default(),
+            max_batch_size: Default::default(),
 
             _max_value_threshold: Default::default(),
         }

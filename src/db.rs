@@ -1,9 +1,11 @@
 use std::{
+    collections::HashMap,
     ops::Deref,
     sync::{atomic, Arc},
 };
 
 use anyhow::{anyhow, bail, Result};
+use bytes::Bytes;
 use log::{error, info};
 use tokio::{
     fs::read_dir,
@@ -29,10 +31,10 @@ use crate::{
 pub struct DB(Arc<DBInner>);
 
 impl DB {
-    pub fn new_transaction(&self, update: bool) -> Result<Txn> {
+    pub async fn new_transaction(&self, update: bool) -> Result<Txn> {
         let mut txn = Txn::new(Arc::clone(&self.0), update);
 
-        let read_ts = self.orc.read_ts();
+        let read_ts = self.orc.read_ts().await?;
         txn.set_read_ts(read_ts);
 
         Ok(txn)
@@ -67,6 +69,7 @@ pub struct DBInner {
     pub(crate) block_writes: atomic::AtomicBool,
     // is_closed: atomic::AtomicBool,
     pub(crate) orc: Oracle,
+    pub(crate) bannedNamespaces: RwLock<HashMap<u64, ()>>,
 }
 
 impl Clone for DB {
@@ -104,6 +107,7 @@ impl DB {
             block_writes: false.into(),
             // is_closed: todo!(),
             orc: Oracle::new(opt.clone()),
+            bannedNamespaces: Default::default(),
         };
 
         inner
@@ -230,6 +234,27 @@ impl DBInner {
             }
         }
     }
+
+    pub(crate) async fn is_banned(&self, key: &Bytes) -> Result<()> {
+        if self.opt.namespace_offset < 0 {
+            return Ok(());
+        }
+        let off = self.opt.namespace_offset as usize;
+        if key.len() <= off + 8 {
+            return Ok(());
+        }
+        let mut bs = [0; 8];
+        bs.copy_from_slice(&key[off..off + 8]);
+        let num = u64::from_be_bytes(bs);
+        if self.bannedNamespaces.read().await.contains_key(&num) {
+            bail!(Error::BannedKey)
+        }
+        Ok(())
+    }
+
+    pub(crate) fn value_threshold(&self) -> u32 {
+        todo!()
+    }
 }
 
 // impl Display for DB {
@@ -268,6 +293,7 @@ mod tests {
             block_writes: true.into(),
             opt,
             orc,
+            bannedNamespaces: Default::default(),
         }))
     }
 
