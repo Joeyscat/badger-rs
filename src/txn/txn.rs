@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicU32, Arc},
+};
 
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
@@ -9,6 +12,7 @@ use crate::{
     error::Error,
     iterator::Item,
     iterator::{Iterator, IteratorOptions},
+    util::{hash::mem_hash, MEM_ORDERING},
 };
 
 pub(crate) const BADGER_PREFIX: &[u8] = b"!badger!";
@@ -25,7 +29,9 @@ pub struct Txn {
 
     pending_writes: HashMap<Bytes, Entry>,
 
+    num_iterators: AtomicU32,
     discarded: bool,
+    done_read: bool,
     update: bool,
 }
 
@@ -38,21 +44,30 @@ impl Txn {
             db,
             conflict_keys: Default::default(),
             pending_writes: Default::default(),
+            num_iterators: Default::default(),
             discarded: false,
+            done_read: false,
             update,
         }
-    }
-
-    pub(crate) fn set_read_ts(&mut self, read_ts: u64) {
-        self.read_ts = read_ts;
     }
 
     pub fn commit(self) -> Result<()> {
         unimplemented!()
     }
 
-    pub fn discard(&self) {
-        unimplemented!()
+    pub fn discard(&mut self) {
+        if self.discarded {
+            return;
+        }
+        if self.num_iterators.load(MEM_ORDERING) > 0 {
+            panic!("Unclosed iterator at time of Txn.discard.")
+        }
+        self.discarded = true;
+
+        if !self.done_read() {
+            self.done_read = true;
+            self.db.orc.read_mark.done(self.read_ts);
+        }
     }
 
     pub async fn set<B: Into<Bytes>>(&mut self, key: B, value: B) -> Result<()> {
@@ -97,7 +112,7 @@ impl Txn {
         self.check_size(&mut e)?;
 
         if self.db.opt.detect_conflicts {
-            let fp = todo!();
+            let fp = mem_hash(&e.key());
             self.conflict_keys.insert(fp, ());
         }
 
@@ -108,7 +123,8 @@ impl Txn {
 
     fn check_size(&mut self, e: &mut Entry) -> Result<()> {
         let count = self.count + 1;
-        let size = self.size + e.estimate_size_and_set_threshold(self.db.value_threshold()) + 10;
+        let size =
+            self.size + e.estimate_size_and_set_threshold(self.db.value_threshold() as u32) + 10;
         if count >= self.db.opt.max_batch_count || size >= self.db.opt.max_batch_size {
             bail!(Error::TxnTooBig)
         }
@@ -138,6 +154,24 @@ impl Txn {
             prefix,
             s
         ))
+    }
+}
+
+impl Txn {
+    pub(crate) fn done_read(&self) -> bool {
+        self.done_read
+    }
+
+    pub(crate) fn set_done_read(&mut self, v: bool) {
+        self.done_read = v;
+    }
+
+    pub(crate) fn read_ts(&self) -> u64 {
+        self.read_ts
+    }
+
+    pub(crate) fn set_read_ts(&mut self, read_ts: u64) {
+        self.read_ts = read_ts;
     }
 }
 

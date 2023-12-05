@@ -1,4 +1,7 @@
 use crate::manifest::CASTAGNOLI;
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::{cell::RefCell, rc::Rc};
 
@@ -75,3 +78,9 @@ impl<'a, R: ?Sized + Read> Read for HashReader<'a, R> {
 //         self.inner.flush()
 //     }
 // }
+
+pub(crate) fn mem_hash(data: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
+}

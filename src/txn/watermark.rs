@@ -125,7 +125,7 @@ impl WaterMark {
                 assert!(
                     done_until <= index,
                     "Name: {}, done_until: {done_until}, index: {index}",
-                    self.name
+                    &self.name
                 );
 
                 let mut until = done_until;

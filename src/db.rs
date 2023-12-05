@@ -121,6 +121,7 @@ impl DB {
                 .await
                 .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
         )));
+        inner.orc.set_next_txn_ts(inner.max_version().await?)?;
 
         let inner = Arc::new(inner);
         let db = DB(inner);
@@ -235,6 +236,25 @@ impl DBInner {
         }
     }
 
+    async fn max_version(&self) -> Result<u64> {
+        let mut max_version = 0;
+
+        let mut update = |v| {
+            if v > max_version {
+                max_version = v;
+            }
+        };
+        update(self.mt.as_ref().unwrap().read().await.max_version());
+
+        for mt in self.imm.read().await.iter() {
+            update(mt.max_version());
+        }
+
+        todo!();
+
+        Ok(max_version)
+    }
+
     pub(crate) async fn is_banned(&self, key: &Bytes) -> Result<()> {
         if self.opt.namespace_offset < 0 {
             return Ok(());
@@ -252,8 +272,8 @@ impl DBInner {
         Ok(())
     }
 
-    pub(crate) fn value_threshold(&self) -> u32 {
-        todo!()
+    pub(crate) fn value_threshold(&self) -> usize {
+        self.opt.value_threshold
     }
 }
 

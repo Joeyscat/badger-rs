@@ -158,6 +158,10 @@ impl MemTable {
             Ok(())
         }
     }
+
+    pub(crate) fn max_version(&self) -> u64 {
+        self.max_version.load(MEM_ORDERING)
+    }
 }
 
 pub(crate) struct LogFile {
