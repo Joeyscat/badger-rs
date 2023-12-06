@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use anyhow::{anyhow, bail, Result};
+use bytes::Bytes;
 
 use crate::{option::Options, table::Table};
 
@@ -12,7 +13,7 @@ pub struct LevelHandler {
 }
 
 impl LevelHandler {
-    pub fn new(opt: Options, level: u32) -> Self {
+    pub(crate) fn new(opt: Options, level: u32) -> Self {
         Self {
             tables: Mutex::new(vec![]),
             level,
@@ -33,7 +34,7 @@ impl LevelHandler {
         self.tables = Mutex::new(tables);
     }
 
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.level == 0 {
             return Ok(());
         }
@@ -62,5 +63,60 @@ impl LevelHandler {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn level(&self) -> u32 {
+        self.level
+    }
+
+    pub(crate) fn tables(&self, level: u32) -> Result<Vec<TableInfo>> {
+        let mut result = vec![];
+
+        let ts = self.tables.lock().unwrap();
+        for t in ts.iter() {
+            result.push(TableInfo {
+                id: t.id(),
+                level,
+                left: t.smallest(),
+                right: t.biggest(),
+                key_count: t.key_count(),
+                on_disk_size: t.on_disk_size(),
+                stale_data_size: t.stale_data_size(),
+                uncompressed_size: t.uncompressed_size(),
+                max_version: t.max_version(),
+                index_size: t.index_size(),
+                bloom_filter_size: t.bloom_filter_size(),
+            });
+        }
+
+        Ok(result)
+    }
+}
+
+pub(crate) struct TableInfo {
+    id: u64,
+    level: u32,
+    left: Bytes,
+    right: Bytes,
+    key_count: u32,
+    on_disk_size: u32,
+    stale_data_size: u32,
+    uncompressed_size: u32,
+    max_version: u64,
+    index_size: usize,
+    bloom_filter_size: usize,
+}
+
+impl TableInfo {
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn level(&self) -> u32 {
+        self.level
+    }
+
+    pub(crate) fn max_version(&self) -> u64 {
+        self.max_version
     }
 }

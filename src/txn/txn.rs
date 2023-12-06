@@ -186,7 +186,7 @@ mod tests {
     use bytes::Bytes;
     use test_log::test;
 
-    use crate::{entry::Entry, test::db::new_test_db, txn::Txn};
+    use crate::{entry::Entry, test::db::new_test_db};
 
     #[test(tokio::test)]
     async fn test_txn_simple() {

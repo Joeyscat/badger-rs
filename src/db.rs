@@ -250,7 +250,9 @@ impl DBInner {
             update(mt.max_version());
         }
 
-        todo!();
+        for ti in self.tables()? {
+            update(ti.max_version());
+        }
 
         Ok(max_version)
     }

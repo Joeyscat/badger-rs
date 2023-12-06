@@ -11,6 +11,7 @@ mod fb;
 mod level;
 mod manifest;
 mod memtable;
+mod read;
 mod skiplist;
 mod table;
 #[cfg(test)]

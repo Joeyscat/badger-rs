@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use log::info;
-use std::{collections::HashMap, fs::remove_file, rc::Rc, sync::atomic::AtomicU64};
+use std::{collections::HashMap, fs::remove_file, sync::atomic::AtomicU64};
 
 use crate::{
     level::compaction::LevelCompactStatus,
@@ -13,7 +13,10 @@ use crate::{
     },
 };
 
-use super::{compaction::CompactStatus, level_handler::LevelHandler};
+use super::{
+    compaction::CompactStatus,
+    level_handler::{LevelHandler, TableInfo},
+};
 
 pub struct LevelsController {
     next_file_id: AtomicU64,
@@ -112,6 +115,23 @@ impl LevelsController {
             l.validate()?;
         }
         Ok(())
+    }
+
+    pub(crate) fn tables(&self) -> Result<Vec<TableInfo>> {
+        let mut result = vec![];
+        for l in self.levels.iter() {
+            let mut v = l.tables(l.level())?;
+            result.append(&mut v);
+        }
+
+        result.sort_by(|a, b| {
+            if a.level() != b.level() {
+                return a.level().cmp(&b.level());
+            }
+            return a.id().cmp(&b.id());
+        });
+
+        Ok(result)
     }
 }
 
