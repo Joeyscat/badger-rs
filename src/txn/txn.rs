@@ -8,11 +8,11 @@ use bytes::Bytes;
 
 use crate::{
     db::DBInner,
-    entry::Entry,
+    entry::{is_deleted_or_expired, Entry},
     error::Error,
     iterator::Item,
     iterator::{Iterator, IteratorOptions},
-    util::{hash::mem_hash, MEM_ORDERING},
+    util::{hash::mem_hash, kv::key_with_ts, MEM_ORDERING},
 };
 
 pub(crate) const BADGER_PREFIX: &[u8] = b"!badger!";
@@ -66,7 +66,8 @@ impl Txn {
 
         if !self.done_read() {
             self.done_read = true;
-            self.db.orc.read_mark.done(self.read_ts);
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(self.db.orc.read_mark.done(self.read_ts));
         }
     }
 
@@ -74,8 +75,47 @@ impl Txn {
         self.set_entry(Entry::new(key.into(), value.into())).await
     }
 
-    pub async fn get<B: Into<Bytes>>(&self, _key: B) -> Result<Item> {
-        unimplemented!()
+    pub async fn get<B: Into<Bytes>>(&self, key: B) -> Result<Item> {
+        let key: Bytes = key.into();
+        if self.discarded {
+            bail!(Error::DiscardedTxn)
+        } else if key.len() == 0 {
+            bail!(Error::EmptyKey)
+        }
+        self.db.is_banned(&key).await?;
+
+        if self.update {
+            if let Some(e) = self.pending_writes.get(&key) {
+                if e.key().eq(&key) {
+                    if is_deleted_or_expired(e.meta(), e.expires_at()) {
+                        bail!(Error::KeyNotFound)
+                    }
+                    let item = Item::from_entry(e, self.read_ts());
+                    return Ok(item);
+                }
+            }
+            self.add_read_key(&key);
+        }
+
+        let seek = key_with_ts(key.to_vec(), self.read_ts).into();
+        let vs = self.db.get(&seek).await?;
+        if vs.value.is_empty() || vs.meta.is_empty() {
+            bail!(Error::KeyNotFound)
+        }
+        if is_deleted_or_expired(vs.meta, vs.expires_at) {
+            bail!(Error::KeyNotFound)
+        }
+
+        let item = Item::from_value_struct(&vs, &key);
+
+        Ok(item)
+    }
+
+    fn add_read_key(&self, key: &Bytes) {
+        if self.update {
+            let fp = mem_hash(key);
+            todo!()
+        }
     }
 
     pub async fn delete<B: Into<Bytes>>(&mut self, key: B) -> Result<()> {
@@ -125,7 +165,7 @@ impl Txn {
         let count = self.count + 1;
         let size =
             self.size + e.estimate_size_and_set_threshold(self.db.value_threshold() as u32) + 10;
-        if count >= self.db.opt.max_batch_count || size >= self.db.opt.max_batch_size {
+        if size >= self.db.opt.max_batch_size {
             bail!(Error::TxnTooBig)
         }
 
@@ -203,7 +243,7 @@ mod tests {
         }
 
         let item = txn.get(Bytes::from("key=8")).await.expect("get item fail");
-        assert_eq!(item.value_copy(), "val=8");
+        assert_eq!(item.value(), "val=8");
 
         txn.commit().unwrap();
     }

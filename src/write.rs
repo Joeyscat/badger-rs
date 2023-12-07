@@ -181,7 +181,7 @@ impl DB {
     }
 
     async fn write_to_memtable(&self, req: &mut WriteReq) -> Result<()> {
-        let mut mt = self.mt.as_ref().unwrap().write().await;
+        let mut mt = self.mt.write().await;
         for (ent, vp) in req.entries_vptrs.iter_mut() {
             if let Err(e) = if ent.skip_vlog(self.opt.value_threshold) {
                 ent.meta_mut().remove(Meta::VALUE_POINTER);
@@ -203,14 +203,14 @@ impl DB {
     }
 
     async fn ensure_room_for_write(&self) -> Result<()> {
-        let mt = self.mt.as_ref().unwrap();
-        if !mt.read().await.is_full() {
+        if !self.mt.read().await.is_full() {
             return Ok(());
         }
         debug!("Making room for writes");
 
-        let mt_new = self.new_mem_table().await?;
-        let mut mt = mt.write().await;
+        let mt_new = DB::new_mem_table(&self.opt, self.next_mem_fid.load(MEM_ORDERING)).await?;
+        self.next_mem_fid.fetch_add(1, MEM_ORDERING);
+        let mut mt = self.mt.write().await;
         let mt = replace(&mut *mt, mt_new);
         let mt = Arc::new(mt);
 

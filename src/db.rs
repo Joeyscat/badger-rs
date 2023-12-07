@@ -4,7 +4,7 @@ use std::{
     sync::{atomic, Arc},
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use log::{error, info};
 use tokio::{
@@ -23,7 +23,6 @@ use crate::{
     memtable::{open_mem_table, MemTable, MEM_FILE_EXT},
     option::Options,
     txn::{Oracle, Txn},
-    util::MEM_ORDERING,
     vlog::ValueLog,
     write::{WriteReq, KV_WRITE_CH_CAPACITY},
 };
@@ -54,7 +53,7 @@ pub struct DBInner {
     // value_dir_guard: x,
 
     // closers: closers,
-    pub(crate) mt: Option<Arc<RwLock<MemTable>>>,
+    pub(crate) mt: Arc<RwLock<MemTable>>,
     pub(crate) imm: RwLock<Vec<Arc<MemTable>>>,
 
     pub(crate) next_mem_fid: atomic::AtomicU32,
@@ -88,16 +87,26 @@ impl DB {
         drop(mm);
         let mf = Arc::new(RwLock::new(mf));
 
+        let (imm, mut next_mem_fid) = Self::open_mem_tables(&opt).await?;
+        let mt = Self::new_mem_table(&opt, next_mem_fid).await?;
+        next_mem_fid += 1;
+
+        let max_version = Self::max_version(&mt, &imm, &lc).await?;
+        let mut orc = Oracle::new(opt.clone());
+        orc.set_next_txn_ts(max_version)?;
+        info!("Set next_txn_ts to {}", orc.next_txn_ts()?);
+
         let vlog = ValueLog::open(opt.clone()).await?;
+        orc.incre_next_ts()?;
 
         let (write_tx, write_rx) = mpsc::channel(KV_WRITE_CH_CAPACITY);
         let (flush_tx, flush_rx) = mpsc::channel(opt.num_memtables as usize);
 
-        let mut inner = DBInner {
-            mt: None,
+        let db = DB(Arc::new(DBInner {
+            mt: Arc::new(RwLock::new(mt)),
             lc,
-            imm: RwLock::new(Vec::with_capacity(opt.num_memtables as usize)),
-            next_mem_fid: Default::default(),
+            imm: RwLock::new(imm),
+            next_mem_fid: next_mem_fid.into(),
             opt: opt.clone(),
             manifest: Arc::clone(&mf),
             vlog,
@@ -106,25 +115,9 @@ impl DB {
             // close_once: todo!(),
             block_writes: false.into(),
             // is_closed: todo!(),
-            orc: Oracle::new(opt.clone()),
+            orc,
             bannedNamespaces: Default::default(),
-        };
-
-        inner
-            .open_mem_tables()
-            .await
-            .map_err(|e| anyhow!("Opening memtables error: {}", e))?;
-
-        inner.mt = Some(Arc::new(RwLock::new(
-            inner
-                .new_mem_table()
-                .await
-                .map_err(|e| anyhow!("Cannot create memtable: {}", e))?,
-        )));
-        inner.orc.set_next_txn_ts(inner.max_version().await?)?;
-
-        let inner = Arc::new(inner);
-        let db = DB(inner);
+        }));
 
         let write_close_send = Arc::new(Notify::new());
         let write_close_recv = write_close_send.clone();
@@ -141,25 +134,37 @@ impl DB {
         }
         Ok(())
     }
-}
 
-impl DBInner {
-    pub fn close(self) -> Result<()> {
-        unimplemented!()
+    async fn max_version(
+        mt: &MemTable,
+        imm: &Vec<Arc<MemTable>>,
+        lc: &LevelsController,
+    ) -> Result<u64> {
+        let mut max_version = 0;
+
+        let mut update = |v| {
+            if v > max_version {
+                max_version = v;
+            }
+        };
+        update(mt.max_version());
+
+        for mt in imm.iter() {
+            update(mt.max_version());
+        }
+
+        for ti in lc.tables()? {
+            update(ti.max_version());
+        }
+
+        Ok(max_version)
     }
 
-    pub fn update(&self, _f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
-        unimplemented!()
-    }
+    async fn open_mem_tables(opt: &Options) -> Result<(Vec<Arc<MemTable>>, u32)> {
+        let mut imm = Vec::with_capacity(opt.num_memtables as usize);
+        let mut next_mem_fid = 0;
 
-    pub fn view(&self, _f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
-        unimplemented!()
-    }
-}
-
-impl DBInner {
-    async fn open_mem_tables(&self) -> Result<()> {
-        let dir = self.opt.dir.clone();
+        let dir = opt.dir.clone();
         let mut entries = read_dir(dir.as_str()).await?;
         let mut fids = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
@@ -181,7 +186,7 @@ impl DBInner {
         fids.sort();
         for fid in &fids {
             let (mt, _) = open_mem_table(
-                self.opt.clone(),
+                opt.clone(),
                 fid.to_owned(),
                 std::fs::File::options().read(true).write(true),
             )
@@ -192,71 +197,59 @@ impl DBInner {
                 mt.wal.delete()?;
                 continue;
             }
-            self.imm.write().await.push(Arc::new(mt));
+            imm.push(Arc::new(mt));
         }
         if !fids.is_empty() {
-            self.next_mem_fid.store(
-                fids.last()
-                    .expect("Fetching last fid from a non empty vector")
-                    .to_owned(),
-                MEM_ORDERING,
-            );
+            next_mem_fid = fids
+                .last()
+                .expect("Fetching last fid from a non empty vector")
+                .to_owned();
         }
-        self.next_mem_fid.fetch_add(1, MEM_ORDERING);
-        Ok(())
+        next_mem_fid += 1;
+        Ok((imm, next_mem_fid))
     }
 
-    pub(crate) async fn new_mem_table(&self) -> Result<MemTable> {
+    pub(crate) async fn new_mem_table(opt: &Options, next_mem_fid: u32) -> Result<MemTable> {
         match open_mem_table(
-            self.opt.clone(),
-            self.next_mem_fid.load(MEM_ORDERING),
+            opt.clone(),
+            next_mem_fid.to_owned(),
             std::fs::File::options().read(true).write(true).create(true),
         )
         .await
         {
             Ok((mt, true)) => {
-                self.next_mem_fid.fetch_add(1, MEM_ORDERING);
                 return Ok(mt);
             }
             Ok((_, _)) => {
                 bail!(
                     "File {:05}{} already exists",
-                    self.next_mem_fid.load(MEM_ORDERING),
+                    next_mem_fid.to_owned(),
                     MEM_FILE_EXT
                 )
             }
             Err(e) => {
-                error!(
-                    "Got error for id({}): {}",
-                    self.next_mem_fid.load(MEM_ORDERING),
-                    e
-                );
+                error!("Got error for id({}): {}", next_mem_fid.to_owned(), e);
                 bail!("new_mem_table error: {}", e)
             }
         }
     }
+}
 
-    async fn max_version(&self) -> Result<u64> {
-        let mut max_version = 0;
-
-        let mut update = |v| {
-            if v > max_version {
-                max_version = v;
-            }
-        };
-        update(self.mt.as_ref().unwrap().read().await.max_version());
-
-        for mt in self.imm.read().await.iter() {
-            update(mt.max_version());
-        }
-
-        for ti in self.tables()? {
-            update(ti.max_version());
-        }
-
-        Ok(max_version)
+impl DBInner {
+    pub fn close(self) -> Result<()> {
+        unimplemented!()
     }
 
+    pub fn update(&self, _f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
+        unimplemented!()
+    }
+
+    pub fn view(&self, _f: fn(txn: &Txn) -> Result<()>) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl DBInner {
     pub(crate) async fn is_banned(&self, key: &Bytes) -> Result<()> {
         if self.opt.namespace_offset < 0 {
             return Ok(());
@@ -300,16 +293,28 @@ mod tests {
         let lc = LevelsController::new(opt.clone(), &mm).await.unwrap();
         drop(mm);
         let manifest = Arc::new(RwLock::new(mf));
+
+        let (imm, mut next_mem_fid) = DB::open_mem_tables(&opt).await.unwrap();
+        let mt = DB::new_mem_table(&opt, next_mem_fid).await.unwrap();
+        next_mem_fid += 1;
+
+        let max_version = DB::max_version(&mt, &imm, &lc).await.unwrap();
+        let mut orc = Oracle::new(opt.clone());
+        orc.set_next_txn_ts(max_version).unwrap();
+
+        let vlog = ValueLog::open(opt.clone()).await.unwrap();
+        orc.incre_next_ts().unwrap();
+
         let (write_tx, _) = mpsc::channel(KV_WRITE_CH_CAPACITY);
         let (flush_tx, _) = mpsc::channel(opt.num_memtables as usize);
-        let orc = Oracle::new(opt.clone());
+
         DB(Arc::new(DBInner {
-            mt: None,
-            imm: RwLock::new(Vec::with_capacity(opt.num_memtables as usize)),
-            next_mem_fid: Default::default(),
+            mt: Arc::new(RwLock::new(mt)),
+            imm: RwLock::new(imm),
+            next_mem_fid: next_mem_fid.into(),
             manifest,
             lc,
-            vlog: ValueLog::open(opt.clone()).await.unwrap(),
+            vlog,
             write_tx,
             flush_tx,
             block_writes: true.into(),
@@ -326,10 +331,8 @@ mod tests {
 
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
-        let db = create_test_db(opt).await;
-        db.next_mem_fid.store(1, MEM_ORDERING);
-
-        let mt = db.new_mem_table().await.unwrap();
+        let (imm, mut next_mem_fid) = DB::open_mem_tables(&opt).await.unwrap();
+        let mt = DB::new_mem_table(&opt, next_mem_fid).await.unwrap();
 
         println!("{}", mt);
     }
@@ -341,10 +344,9 @@ mod tests {
 
         let mut opt = Options::default();
         opt.dir = test_dir.path().to_str().unwrap().to_string();
-        let db = create_test_db(opt).await;
 
-        db.open_mem_tables().await.unwrap();
+        let (imm, _) = DB::open_mem_tables(&opt).await.unwrap();
 
-        println!("{}", &db.imm.read().await.len());
+        println!("{}", imm.len());
     }
 }

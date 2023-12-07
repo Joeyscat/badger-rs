@@ -50,6 +50,8 @@ pub fn calculate_checksum(data: &[u8], ca: pb::checksum::Algorithm) -> u64 {
 pub(crate) mod kv {
     use std::cmp::Ordering;
 
+    use bytes::{BufMut, BytesMut};
+
     pub fn compare_keys(a: &[u8], b: &[u8]) -> Ordering {
         let x = a[..a.len() - 8].cmp(&b[..b.len() - 8]);
         if x.is_ne() {
@@ -70,6 +72,11 @@ pub(crate) mod kv {
         key.extend_from_slice(&(u64::MAX - ts).to_be_bytes());
         key
     }
+
+    // pub fn key_with_ts(mut key: BytesMut, ts: u64) -> BytesMut {
+    //     key.put((u64::MAX - ts).to_be_bytes().as_ref());
+    //     key
+    // }
 
     pub fn parse_ts(key: &[u8]) -> u64 {
         if key.len() < 8 {

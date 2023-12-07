@@ -76,6 +76,10 @@ impl WaterMark {
         };
     }
 
+    pub(crate) fn mark_tx(&self) -> Sender<Mark> {
+        self.mark_tx.clone()
+    }
+
     pub(crate) fn done_until(&self) -> u64 {
         self.done_until.load(MEM_ORDERING)
     }

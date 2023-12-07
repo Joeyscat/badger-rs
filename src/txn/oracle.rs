@@ -62,15 +62,9 @@ impl Oracle {
         Ok(read_ts)
     }
 
-    pub(crate) fn next_ts(&self) -> Result<u64> {
+    pub(crate) fn next_txn_ts(&self) -> Result<u64> {
         let txnx = self.txnx.lock().map_err(|e| anyhow!("txnx: {}", e))?;
         Ok(txnx.next_txn_ts)
-    }
-
-    pub(crate) fn incre_next_ts(&mut self) -> Result<()> {
-        let txnx = self.txnx.get_mut().map_err(|e| anyhow!("txnx: {}", e))?;
-        txnx.next_txn_ts += 1;
-        Ok(())
     }
 
     pub(crate) fn set_next_txn_ts(&mut self, v: u64) -> Result<()> {
@@ -78,5 +72,11 @@ impl Oracle {
             Ok(e) => Ok(e.next_txn_ts = v),
             Err(e) => bail!("{}", e),
         }
+    }
+
+    pub(crate) fn incre_next_ts(&mut self) -> Result<()> {
+        let txnx = self.txnx.get_mut().map_err(|e| anyhow!("txnx: {}", e))?;
+        txnx.next_txn_ts += 1;
+        Ok(())
     }
 }

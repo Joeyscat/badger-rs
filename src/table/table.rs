@@ -148,12 +148,12 @@ impl Table {
         self.get_table_index().unwrap().stale_data_size()
     }
 
-    pub(crate) fn smallest(&self) -> Bytes {
-        self.smallest.clone()
+    pub(crate) fn smallest(&self) -> &Bytes {
+        &self.smallest
     }
 
-    pub(crate) fn biggest(&self) -> Bytes {
-        self.biggest.clone()
+    pub(crate) fn biggest(&self) -> &Bytes {
+        &self.biggest
     }
 
     pub(crate) fn has_bloom_filter(&self) -> bool {

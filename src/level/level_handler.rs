@@ -77,8 +77,8 @@ impl LevelHandler {
             result.push(TableInfo {
                 id: t.id(),
                 level,
-                left: t.smallest(),
-                right: t.biggest(),
+                left: t.smallest().clone(),
+                right: t.biggest().clone(),
                 key_count: t.key_count(),
                 on_disk_size: t.on_disk_size(),
                 stale_data_size: t.stale_data_size(),

@@ -8,6 +8,7 @@ use std::{
     io::Read,
     io::{BufRead, ErrorKind::UnexpectedEof},
     rc::Rc,
+    time::UNIX_EPOCH,
 };
 
 use crate::{error::Error, manifest::CASTAGNOLI, util::hash::HashReader};
@@ -39,6 +40,21 @@ impl Display for Meta {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
     }
+}
+
+pub(crate) fn is_deleted_or_expired(meta: Meta, expires_at: u64) -> bool {
+    if meta.contains(Meta::DELETE) {
+        return true;
+    }
+    if expires_at == 0 {
+        return false;
+    }
+
+    return expires_at
+        <= std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs() as u64;
 }
 
 #[derive(Debug, Default, Clone, Copy)]

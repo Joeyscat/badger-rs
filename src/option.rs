@@ -74,7 +74,7 @@ pub struct Options {
     _managed_txns: bool,
 
     // Flags for testing purposes
-    pub(crate) max_batch_count: u32,
+    // pub(crate) max_batch_count: u32,
     pub(crate) max_batch_size: u32,
 
     _max_value_threshold: f64,
@@ -82,7 +82,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
+        let mut x = Self {
             dir: "/tmp/badger".to_string(),
 
             sync_writes: false,
@@ -126,11 +126,16 @@ impl Default for Options {
             external_magic_version: Default::default(),
             _managed_txns: Default::default(),
 
-            max_batch_count: Default::default(),
+            // max_batch_count: Default::default(),
             max_batch_size: Default::default(),
 
             _max_value_threshold: Default::default(),
-        }
+        };
+
+        x.max_batch_size = ((x.mem_table_size * 15) / 100) as u32;
+        // x.max_batch_count = x.max_batch_size / todo!("entry size") as u32;
+
+        x
     }
 }
 
